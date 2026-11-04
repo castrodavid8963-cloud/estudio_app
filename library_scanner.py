@@ -7,6 +7,8 @@ from database import obtener_conexion
 TAM_HUELLA = 1024 * 1024      # se leen los primeros 1 MB para la huella
 TAM_COLA_HUELLA = 64 * 1024   # y los últimos 64 KB (si el archivo es mayor)
 LOTE_COMMIT = 50              # confirma en BD cada N archivos para no bloquear a la UI
+# Carpetas de primer nivel que NO se indexan (documentos personales). Se pueden cambiar al llamar.
+EXCLUIDAS_POR_DEFECTO = ("11_Personal_y_Documentos",)
 
 
 def es_carpeta_basura_o_sistema(nombre_carpeta: str) -> bool:
@@ -49,7 +51,8 @@ def _esta_dentro(ruta: str, raiz_normalizada: str) -> bool:
     return _norm(ruta).startswith(raiz_normalizada.rstrip(os.sep) + os.sep)
 
 
-def escanear_e_indexar_biblioteca(ruta_raiz: str, progreso_cb=None) -> tuple[int, int, int]:
+def escanear_e_indexar_biblioteca(ruta_raiz: str, progreso_cb=None,
+                                 excluir=EXCLUIDAS_POR_DEFECTO) -> tuple[int, int, int]:
     """Indexa los PDF de `ruta_raiz`. Devuelve (nuevos, reubicados, no_disponibles).
 
     A diferencia de la versión anterior, NUNCA borra registros: lo que ya no está en la carpeta
@@ -57,12 +60,14 @@ def escanear_e_indexar_biblioteca(ruta_raiz: str, progreso_cb=None) -> tuple[int
     aparecer solo si el archivo reaparece. Los archivos movidos se reconocen por su huella.
 
     `progreso_cb(archivos_revisados)` es opcional y se llama de vez en cuando.
+    `excluir`: carpetas de primer nivel que no se indexan (por defecto, los documentos personales).
     """
     if not ruta_raiz or not os.path.isdir(ruta_raiz):
         print(f"[Escáner] La ruta {ruta_raiz} no existe.")
         return 0, 0, 0
 
     raiz_norm = _norm(ruta_raiz)
+    excluir_cf = {e.casefold() for e in (excluir or ())}
     nuevos = reubicados = revisados = 0
     vistos = set()          # rutas normalizadas encontradas en este escaneo
     reclamados = set()      # ids de recursos ya reubicados en este escaneo
@@ -77,6 +82,10 @@ def escanear_e_indexar_biblioteca(ruta_raiz: str, progreso_cb=None) -> tuple[int
         for root, dirs, files in os.walk(ruta_raiz):
             # No entrar a carpetas basura/sistema
             dirs[:] = [d for d in dirs if not es_carpeta_basura_o_sistema(d)]
+            # Carpetas excluidas (solo las de primer nivel): no se indexan, así que tampoco se les
+            # generan portadas ni se pueden abrir en el Tutor IA.
+            if _norm(root) == raiz_norm and excluir_cf:
+                dirs[:] = [d for d in dirs if d.casefold() not in excluir_cf]
 
             archivos_pdf = [f for f in files if f.lower().endswith('.pdf')]
             if not archivos_pdf:
