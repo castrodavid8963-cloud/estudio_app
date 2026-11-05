@@ -6,7 +6,7 @@ import time
 import tkinter as tk
 
 import customtkinter as ctk
-from PIL import Image, ImageTk
+from PIL import Image, ImageOps, ImageTk
 
 import database as db
 import tiempo
@@ -16,6 +16,8 @@ from tema import C, ESTADO_COLOR, ESTADO_ICONO, fuente, titulo, subtitulo, boton
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_PASO = 0.5, 3.0, 0.15
 MAX_HISTORIAL_GUARDADO = 200
+ANCHO_TUTOR_MIN, ANCHO_TUTOR_MAX, ANCHO_TUTOR_DEFECTO = 280, 700, 380
+FONDO_CLARO, FONDO_OSCURO = "#2a2d3a", "#0b0c10"
 ACCIONES_RAPIDAS = [
     ("📄 Resumir", "Resume en viñetas claras el contenido de la página {n}."),
     ("💡 Conceptos", "Explica con lenguaje sencillo y un ejemplo los conceptos clave de la página {n}."),
@@ -45,18 +47,28 @@ class VistaLector(ctk.CTkFrame):
         self._historial = []
         self._tutor_visible = True
         self._tutor_permitido = True
+        # preferencias (se recuerdan entre sesiones)
+        self._lado = "izquierda" if db.obtener_config("lector_lado") == "izquierda" else "derecha"
+        try:
+            self._ancho_tutor = max(ANCHO_TUTOR_MIN, min(ANCHO_TUTOR_MAX, int(db.obtener_config("lector_ancho_tutor", ANCHO_TUTOR_DEFECTO))))
+        except (TypeError, ValueError):
+            self._ancho_tutor = ANCHO_TUTOR_DEFECTO
+        self._dos = db.obtener_config("lector_dos_paginas") == "1"
+        self._oscuro = db.obtener_config("lector_oscuro") == "1"
 
         self.rowconfigure(1, weight=1)
-        self.columnconfigure(0, weight=1)
         self._crear_barra_superior()
         self._crear_visor()
         self._crear_tutor()
+        self._crear_divisor()
         self._enlazar_eventos()
+        self._disponer()
+        self._pintar_toggles()
 
     # ================================================================== construcción
     def _crear_barra_superior(self):
         b = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, height=54)
-        b.grid(row=0, column=0, columnspan=2, sticky="ew")
+        b.grid(row=0, column=0, columnspan=3, sticky="ew")
         b.grid_propagate(False)
         b.columnconfigure(1, weight=1)
         boton(b, "‹  Volver", self.app.cerrar_lector, "suave", width=90).grid(row=0, column=0, padx=(14, 10), pady=10)
@@ -65,13 +77,13 @@ class VistaLector(ctk.CTkFrame):
 
         nav = ctk.CTkFrame(b, fg_color="transparent")
         nav.grid(row=0, column=2, padx=6)
-        boton(nav, "‹", lambda: self.ir_a(self._pagina - 1), "fantasma", width=30).pack(side="left")
+        boton(nav, "‹", lambda: self.ir_a(self._pagina - self._paso()), "fantasma", width=30).pack(side="left")
         self.ent_pagina = ctk.CTkEntry(nav, width=52, height=30, justify="center", fg_color=C["tarjeta"], border_color=C["borde"])
         self.ent_pagina.pack(side="left", padx=2)
         self.ent_pagina.bind("<Return>", self._ir_desde_entrada)
         self.lbl_total = ctk.CTkLabel(nav, text="/ 0", font=fuente(13), text_color=C["texto2"], width=48)
         self.lbl_total.pack(side="left")
-        boton(nav, "›", lambda: self.ir_a(self._pagina + 1), "fantasma", width=30).pack(side="left")
+        boton(nav, "›", lambda: self.ir_a(self._pagina + self._paso()), "fantasma", width=30).pack(side="left")
 
         zoom = ctk.CTkFrame(b, fg_color="transparent")
         zoom.grid(row=0, column=3, padx=6)
@@ -79,6 +91,10 @@ class VistaLector(ctk.CTkFrame):
         self.lbl_zoom = ctk.CTkLabel(zoom, text="100%", font=fuente(12), text_color=C["texto2"], width=44)
         self.lbl_zoom.pack(side="left")
         boton(zoom, "+", lambda: self.cambiar_zoom(ZOOM_PASO), "fantasma", width=28).pack(side="left")
+        self.btn_dos = boton(zoom, "▯▯", self.alternar_dos_paginas, "fantasma", width=36)
+        self.btn_dos.pack(side="left", padx=(8, 0))
+        self.btn_oscuro = boton(zoom, "🌙", self.alternar_oscuro, "fantasma", width=36)
+        self.btn_oscuro.pack(side="left")
 
         self.var_estado = ctk.StringVar(value="Sin empezar")
         self.menu_estado = ctk.CTkOptionMenu(b, variable=self.var_estado, values=list(db.ESTADOS), width=138, height=30,
@@ -90,25 +106,30 @@ class VistaLector(ctk.CTkFrame):
         self.btn_fav.grid(row=0, column=5)
         self.lbl_sesion = ctk.CTkLabel(b, text="", font=fuente(12, "bold"), text_color=C["texto3"], width=170, anchor="e")
         self.lbl_sesion.grid(row=0, column=6, padx=(4, 6))
-        self.btn_tutor = boton(b, "🤖 Tutor", self.alternar_tutor, "suave", width=86)
-        self.btn_tutor.grid(row=0, column=7, padx=(0, 14))
+        grupo = ctk.CTkFrame(b, fg_color="transparent")
+        grupo.grid(row=0, column=7, padx=(0, 14))
+        self.btn_lado = boton(grupo, "⇄", self.cambiar_lado, "suave", width=34)
+        self.btn_lado.pack(side="left", padx=(0, 4))
+        self.btn_tutor = boton(grupo, "🤖 Tutor", self.alternar_tutor, "suave", width=86)
+        self.btn_tutor.pack(side="left")
 
     def _crear_visor(self):
         self.marco_visor = ctk.CTkFrame(self, fg_color=C["panel"], corner_radius=0)
-        self.marco_visor.grid(row=1, column=0, sticky="nsew")
         self.marco_visor.rowconfigure(0, weight=1)
         self.marco_visor.columnconfigure(0, weight=1)
-        self.lienzo = tk.Canvas(self.marco_visor, bg="#2a2d3a", highlightthickness=0, bd=0)
+        self.lienzo = tk.Canvas(self.marco_visor, bg=FONDO_CLARO, highlightthickness=0, bd=0)
         self.lienzo.grid(row=0, column=0, sticky="nsew")
         self.scroll = ctk.CTkScrollbar(self.marco_visor, command=self.lienzo.yview, button_color=C["borde"])
         self.scroll.grid(row=0, column=1, sticky="ns")
-        self.lienzo.configure(yscrollcommand=self.scroll.set)
+        self.scroll_x = ctk.CTkScrollbar(self.marco_visor, command=self.lienzo.xview, orientation="horizontal",
+                                         button_color=C["borde"], height=12)
+        self.scroll_x.grid(row=1, column=0, sticky="ew")
+        self.lienzo.configure(yscrollcommand=self.scroll.set, xscrollcommand=self.scroll_x.set)
         self._id_img = None
         self._id_msg = self.lienzo.create_text(0, 0, text="", fill=C["texto2"], font=("TkDefaultFont", 13), justify="center")
 
     def _crear_tutor(self):
-        self.tutor = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, width=380)
-        self.tutor.grid(row=1, column=1, sticky="nsew")
+        self.tutor = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, width=self._ancho_tutor)
         self.tutor.grid_propagate(False)
         self.tutor.rowconfigure(2, weight=1)
         self.tutor.columnconfigure(0, weight=1)
@@ -163,11 +184,78 @@ class VistaLector(ctk.CTkFrame):
         self.lienzo.bind("<Enter>", lambda e: self.lienzo.focus_set())
         self.lienzo.bind("<Button-1>", lambda e: (self.lienzo.focus_set(), self._actividad()))
         for tecla, delta in (("<Right>", 1), ("<Next>", 1), ("<Left>", -1), ("<Prior>", -1)):
-            self.lienzo.bind(tecla, lambda e, d=delta: self.ir_a(self._pagina + d))
+            self.lienzo.bind(tecla, lambda e, d=delta: self.ir_a(self._pagina + d * self._paso()))
         self.lienzo.bind("<Home>", lambda e: self.ir_a(1))
         self.lienzo.bind("<End>", lambda e: self.ir_a(self._total))
+        self.lienzo.bind("<Control-d>", lambda e: self.alternar_oscuro())
         self.lienzo.bind("<Control-plus>", lambda e: self.cambiar_zoom(ZOOM_PASO))
         self.lienzo.bind("<Control-minus>", lambda e: self.cambiar_zoom(-ZOOM_PASO))
+
+    # ================================================================== disposición, vista doble y modo oscuro
+    def _crear_divisor(self):
+        """Franja arrastrable entre el visor y el tutor: cambia el ancho de la conversación."""
+        self.divisor = tk.Frame(self, width=7, bg=C["borde"], cursor="sb_h_double_arrow")
+        self.divisor.bind("<B1-Motion>", self._arrastrar_divisor)
+        self.divisor.bind("<ButtonRelease-1>", lambda e: db.guardar_config("lector_ancho_tutor", self._ancho_tutor))
+        self.divisor.bind("<Enter>", lambda e: self.divisor.configure(bg=C["acento"]))
+        self.divisor.bind("<Leave>", lambda e: self.divisor.configure(bg=C["borde"]))
+
+    def _disponer(self):
+        """Coloca visor, divisor y tutor según el lado elegido (cada columna con su peso)."""
+        for w in (self.marco_visor, self.divisor, self.tutor):
+            w.grid_forget()
+        for c in range(3):
+            self.columnconfigure(c, weight=0, minsize=0)
+        if not self._tutor_visible:
+            self.columnconfigure(0, weight=1)
+            self.marco_visor.grid(row=1, column=0, columnspan=3, sticky="nsew")
+            return
+        col_visor, col_tutor = (0, 2) if self._lado == "derecha" else (2, 0)
+        self.columnconfigure(col_visor, weight=1)
+        self.columnconfigure(1, weight=0)
+        self.tutor.configure(width=self._ancho_tutor)
+        self.marco_visor.grid(row=1, column=col_visor, sticky="nsew")
+        self.divisor.grid(row=1, column=1, sticky="ns")
+        self.tutor.grid(row=1, column=col_tutor, sticky="nsew")
+
+    def cambiar_lado(self):
+        self._lado = "izquierda" if self._lado == "derecha" else "derecha"
+        db.guardar_config("lector_lado", self._lado)
+        if not self._tutor_visible:
+            self._tutor_visible = True
+        self._disponer()
+
+    def _arrastrar_divisor(self, e):
+        total = self.winfo_width()
+        if self._lado == "derecha":
+            ancho = self.tutor.winfo_rootx() + self.tutor.winfo_width() - e.x_root
+        else:
+            ancho = e.x_root - self.tutor.winfo_rootx()
+        tope = min(ANCHO_TUTOR_MAX, max(ANCHO_TUTOR_MIN, total - 420))
+        self._ancho_tutor = int(max(ANCHO_TUTOR_MIN, min(tope, ancho)))
+        self.tutor.configure(width=self._ancho_tutor)
+
+    def alternar_dos_paginas(self):
+        self._dos = not self._dos
+        db.guardar_config("lector_dos_paginas", "1" if self._dos else "0")
+        self._pintar_toggles()
+        if self._doc is not None:
+            self._pagina = self._normalizar(self._pagina)
+            self._actividad(forzar=True)
+            self._renderizar(scroll="inicio")
+
+    def alternar_oscuro(self):
+        self._oscuro = not self._oscuro
+        db.guardar_config("lector_oscuro", "1" if self._oscuro else "0")
+        self._pintar_toggles()
+        if self._doc is not None:
+            self._renderizar()
+
+    def _pintar_toggles(self):
+        for b, activo in ((self.btn_dos, self._dos), (self.btn_oscuro, self._oscuro)):
+            b.configure(fg_color=C["acento_suave"] if activo else "transparent",
+                        text_color=C["texto"] if activo else C["texto2"])
+        self.lienzo.configure(bg=FONDO_OSCURO if self._oscuro else FONDO_CLARO)
 
     # ================================================================== abrir / cerrar
     def abrir(self, libro: dict):
@@ -203,7 +291,7 @@ class VistaLector(ctk.CTkFrame):
         self.lbl_total.configure(text=f"/ {self._total}")
         inicio = libro["ultima_pagina"] if 0 < libro["ultima_pagina"] <= self._total else 1
         self._zoom = 1.0
-        self._pagina = inicio
+        self._pagina = self._normalizar(inicio)
         self.after(60, lambda: self._renderizar(scroll="inicio"))
         self._preparar_tutor()
 
@@ -237,28 +325,67 @@ class VistaLector(ctk.CTkFrame):
         self.lienzo.itemconfigure(self._id_msg, text=texto)
         self.lienzo.configure(scrollregion=(0, 0, w, h))
 
+    def _paso(self) -> int:
+        return 2 if self._dos else 1
+
+    def _normalizar(self, pagina: int) -> int:
+        """En vista doble las parejas son (1,2), (3,4)…: la página inicial siempre es impar."""
+        pagina = max(1, min(self._total, int(pagina)))
+        if self._dos:
+            pagina -= (pagina - 1) % 2
+        return pagina
+
+    def _ultima_visible(self) -> int:
+        return min(self._total, self._pagina + (1 if self._dos else 0))
+
     def _renderizar(self, scroll=None):
         if self._doc is None:
             return
         self.lienzo.itemconfigure(self._id_msg, text="")
-        gen, pagina, zoom = self._gen, self._pagina, self._zoom
+        gen, pagina, zoom, dos, oscuro = self._gen, self._pagina, self._zoom, self._dos, self._oscuro
         ancho_disp = max(self.lienzo.winfo_width() - 32, 300)
         self.ent_pagina.delete(0, "end")
         self.ent_pagina.insert(0, str(pagina))
         self.lbl_zoom.configure(text=f"{int(zoom * 100)}%")
+        self.lbl_total.configure(text=f"/ {self._total}")
 
         def trabajo():
             try:
+                numeros = [pagina] + ([pagina + 1] if dos and pagina + 1 <= self._total else [])
+                ancho_pag = (ancho_disp - (10 if len(numeros) > 1 else 0)) / (2 if dos else 1)
+                imgs = []
                 with PYMUPDF_LOCK:
-                    pg = self._doc[pagina - 1]
-                    base = ancho_disp / max(pg.rect.width, 1)
-                    pix = pg.get_pixmap(matrix=fitz.Matrix(base * zoom, base * zoom), alpha=False)
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    for n in numeros:
+                        pg = self._doc[n - 1]
+                        base = ancho_pag / max(pg.rect.width, 1)
+                        pix = pg.get_pixmap(matrix=fitz.Matrix(base * zoom, base * zoom), alpha=False)
+                        imgs.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
+                if len(imgs) == 1:
+                    img = imgs[0]
+                    if dos:        # última página impar: se deja a la izquierda con su hueco a la derecha
+                        lienzo = Image.new("RGB", (img.width * 2 + 10, img.height), (255, 255, 255))
+                        lienzo.paste(img, (0, 0))
+                        img = lienzo
+                else:
+                    alto = max(i.height for i in imgs)
+                    img = Image.new("RGB", (sum(i.width for i in imgs) + 10, alto), (255, 255, 255))
+                    x = 0
+                    for i in imgs:
+                        img.paste(i, (x, 0))
+                        x += i.width + 10
+                if oscuro:
+                    img = self._a_oscuro(img)
             except Exception as e:
                 self.app._en_ui(self._mostrar_error_pagina, gen, str(e))
                 return
             self.app._en_ui(self._mostrar_pagina, gen, pagina, img, scroll)
         threading.Thread(target=trabajo, daemon=True).start()
+
+    @staticmethod
+    def _a_oscuro(img):
+        """Invierte la página y suaviza el contraste (negro puro y blanco puro cansan igual)."""
+        inv = ImageOps.invert(img)
+        return inv.point(lambda v: 18 + int(v * 0.80))
 
     def _mostrar_error_pagina(self, gen, error):
         if gen == self._gen:
@@ -268,8 +395,8 @@ class VistaLector(ctk.CTkFrame):
         if gen != self._gen or pagina != self._pagina:
             return
         self._foto = ImageTk.PhotoImage(img)
-        w_lienzo = max(self.lienzo.winfo_width(), img.width)
-        x = max(0, (w_lienzo - img.width) // 2)
+        w_lienzo = max(self.lienzo.winfo_width(), img.width + 32)
+        x = max(16, (w_lienzo - img.width) // 2)
         if self._id_img:
             self.lienzo.delete(self._id_img)
         self._id_img = self.lienzo.create_image(x, 16, image=self._foto, anchor="nw")
@@ -282,7 +409,7 @@ class VistaLector(ctk.CTkFrame):
     def ir_a(self, pagina, scroll="inicio"):
         if self._doc is None:
             return
-        pagina = max(1, min(self._total, int(pagina)))
+        pagina = self._normalizar(pagina)
         self._actividad(forzar=True)
         if pagina == self._pagina:
             return
@@ -322,17 +449,21 @@ class VistaLector(ctk.CTkFrame):
         self._actividad()
         if direccion is None:
             direccion = 1 if e.delta > 0 else -1
-        if e.state & 0x4 if hasattr(e, "state") else False:        # Ctrl + rueda = zoom
+        estado = getattr(e, "state", 0)
+        if estado & 0x4:                       # Ctrl + rueda = zoom
             self.cambiar_zoom(ZOOM_PASO * direccion)
+            return
+        if estado & 0x1:                       # Shift + rueda = desplazamiento horizontal
+            self.lienzo.xview_scroll(-3 * direccion, "units")
             return
         ahora = time.monotonic()
         arriba, abajo = self.lienzo.yview()
         if direccion < 0 and abajo >= 0.999 and ahora - self._ultimo_cambio > 0.4:
             self._ultimo_cambio = ahora
-            self.ir_a(self._pagina + 1, "inicio")
+            self.ir_a(self._pagina + self._paso(), "inicio")
         elif direccion > 0 and arriba <= 0.001 and ahora - self._ultimo_cambio > 0.4 and self._pagina > 1:
             self._ultimo_cambio = ahora
-            self.ir_a(self._pagina - 1, "fin")
+            self.ir_a(self._pagina - self._paso(), "fin")
         else:
             self.lienzo.yview_scroll(-3 * direccion, "units")
 
@@ -348,8 +479,9 @@ class VistaLector(ctk.CTkFrame):
         self._guardar_job = None
         if self.libro is None or self._doc is None:
             return
-        estado = db.guardar_progreso_lectura(self.libro["id"], self._pagina, self._total)
-        self.libro["ultima_pagina"], self.libro["total_paginas"], self.libro["estado"] = self._pagina, self._total, estado
+        visible = self._ultima_visible()
+        estado = db.guardar_progreso_lectura(self.libro["id"], visible, self._total)
+        self.libro["ultima_pagina"], self.libro["total_paginas"], self.libro["estado"] = visible, self._total, estado
         if self.var_estado.get() != estado:
             self.var_estado.set(estado)
 
@@ -380,10 +512,7 @@ class VistaLector(ctk.CTkFrame):
     # ================================================================== tutor IA
     def alternar_tutor(self):
         self._tutor_visible = not self._tutor_visible
-        if self._tutor_visible:
-            self.tutor.grid(row=1, column=1, sticky="nsew")
-        else:
-            self.tutor.grid_remove()
+        self._disponer()
 
     def _escribir(self, quien, texto, tag_quien, tag_texto):
         self.chat.configure(state="normal")

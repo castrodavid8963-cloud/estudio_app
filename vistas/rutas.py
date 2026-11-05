@@ -1,4 +1,6 @@
 """Rutas de estudio: roadmaps por objetivo generados a partir de TU biblioteca."""
+import tkinter as tk
+
 import customtkinter as ctk
 
 import database as db
@@ -6,6 +8,7 @@ import roadmap
 from tema import (C, ESTADO_COLOR, NIVEL_COLOR, fuente, tarjeta, titulo, subtitulo, boton, barra, chip,
                   estado_vacio, recortar, nombre_area)
 
+ANCHO_MIN, ANCHO_MAX = 200, 620
 ESTADO_SIGUIENTE = {"Sin empezar": "Completado", "En progreso": "Completado", "Completado": "Sin empezar"}
 
 
@@ -16,19 +19,33 @@ class VistaRutas(ctk.CTkFrame):
         self.objetivo = None
         self._libros = []
         self._botones_obj = {}
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=1)
         self.rowconfigure(0, weight=1)
+        try:
+            self._ancho_lista = max(ANCHO_MIN, min(ANCHO_MAX, int(db.obtener_config("rutas_ancho", 290))))
+        except (TypeError, ValueError):
+            self._ancho_lista = 290
+        self._etiquetas_nombre = []
 
-        izq = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, width=290)
+        izq = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, width=self._ancho_lista)
         izq.grid(row=0, column=0, sticky="nsew")
         izq.grid_propagate(False)
+        izq.pack_propagate(False)       # sus hijos usan pack: sin esto el ancho lo dicta el contenido
+        self.izq = izq
+        # Borde arrastrable: cambia el ancho de la lista de rutas
+        self.divisor = tk.Frame(self, width=7, bg=C["borde"], cursor="sb_h_double_arrow")
+        self.divisor.grid(row=0, column=1, sticky="ns")
+        self.divisor.bind("<B1-Motion>", self._arrastrar)
+        self.divisor.bind("<ButtonRelease-1>", lambda e: db.guardar_config("rutas_ancho", self._ancho_lista))
+        self.divisor.bind("<Enter>", lambda e: self.divisor.configure(bg=C["acento"]))
+        self.divisor.bind("<Leave>", lambda e: self.divisor.configure(bg=C["borde"]))
         titulo(izq, "Rutas", 22).pack(anchor="w", padx=20, pady=(24, 0))
         subtitulo(izq, "Elige un objetivo y sigue sus etapas.", 12).pack(anchor="w", padx=20, pady=(0, 10))
         self.lista = ctk.CTkScrollableFrame(izq, fg_color="transparent", scrollbar_button_color=C["borde"])
         self.lista.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
-        self.detalle = ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color=C["borde"])
-        self.detalle.grid(row=0, column=1, sticky="nsew", padx=(8, 4))
+        self.detalle = ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color=C["borde"], width=100)
+        self.detalle.grid(row=0, column=2, sticky="nsew", padx=(8, 4))
 
     # ------------------------------------------------------------------ ciclo de vida
     def al_mostrar(self, objetivo=None):
@@ -47,6 +64,7 @@ class VistaRutas(ctk.CTkFrame):
     def _pintar_lista(self):
         for w in self.lista.winfo_children():
             w.destroy()
+        self._etiquetas_nombre = []
         activo = db.obtener_config("objetivo_activo")
         resumenes = roadmap.resumen_objetivos(self._libros, self._ajustes_todos())
         # La ruta fijada primero; luego por avance (las empezadas arriba)
@@ -58,13 +76,28 @@ class VistaRutas(ctk.CTkFrame):
             f.pack(fill="x", padx=6, pady=3)
             f.columnconfigure(1, weight=1)
             ctk.CTkLabel(f, text=r["icono"], font=fuente(22), width=40).grid(row=0, column=0, rowspan=2, padx=(8, 0), pady=8)
-            ctk.CTkLabel(f, text=recortar(r["nombre"], 21) + ("  📌" if r["id"] == activo else ""), font=fuente(13, "bold"),
-                         text_color=C["texto"], anchor="w").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 0))
+            nombre = ctk.CTkLabel(f, text=r["nombre"] + ("  📌" if r["id"] == activo else ""), font=fuente(13, "bold"),
+                                  text_color=C["texto"], anchor="w", justify="left", wraplength=self._ancho_envoltura())
+            nombre.grid(row=0, column=1, sticky="w", padx=8, pady=(8, 0))
+            self._etiquetas_nombre.append(nombre)
             ctk.CTkLabel(f, text=f"{r['completados']}/{r['total']} libros", font=fuente(11), text_color=C["texto2"],
                          anchor="w").grid(row=1, column=1, sticky="w", padx=8)
             barra(f, r["progreso"], r["color"], alto=4).grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 10))
             for w in [f] + f.winfo_children():
                 w.bind("<Button-1>", lambda e, oid=r["id"]: self._elegir(oid))
+
+    def _ancho_envoltura(self) -> int:
+        return max(90, self._ancho_lista - 130)
+
+    def _arrastrar(self, e):
+        ancho = e.x_root - self.izq.winfo_rootx()
+        self._ancho_lista = int(max(ANCHO_MIN, min(ANCHO_MAX, ancho)))
+        self.izq.configure(width=self._ancho_lista)
+        for et in self._etiquetas_nombre:
+            try:
+                et.configure(wraplength=self._ancho_envoltura())
+            except tk.TclError:
+                pass
 
     def _elegir(self, oid):
         self.objetivo = oid
