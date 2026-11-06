@@ -45,7 +45,9 @@ class VistaLector(ctk.CTkFrame):
         self._leyendo = False
         self._ia_ocupada = False
         self._historial = []
-        self._tutor_visible = True
+        self._tutor_visible = db.obtener_config("lector_tutor_visible") != "0"
+        self._tutor_previo = None          # estado del tutor antes de entrar al modo compacto
+        self._angosto = False
         self._tutor_permitido = True
         # preferencias (se recuerdan entre sesiones)
         self._lado = "izquierda" if db.obtener_config("lector_lado") == "izquierda" else "derecha"
@@ -62,6 +64,7 @@ class VistaLector(ctk.CTkFrame):
         self._crear_tutor()
         self._crear_divisor()
         self._enlazar_eventos()
+        self.bind("<Configure>", self._al_cambiar_tamano)
         self._disponer()
         self._pintar_toggles()
 
@@ -87,10 +90,12 @@ class VistaLector(ctk.CTkFrame):
 
         zoom = ctk.CTkFrame(b, fg_color="transparent")
         zoom.grid(row=0, column=3, padx=6)
-        boton(zoom, "−", lambda: self.cambiar_zoom(-ZOOM_PASO), "fantasma", width=28).pack(side="left")
+        self.zoom_marco = zoom
+        self._zoom_ctrl = [boton(zoom, "−", lambda: self.cambiar_zoom(-ZOOM_PASO), "fantasma", width=28)]
         self.lbl_zoom = ctk.CTkLabel(zoom, text="100%", font=fuente(12), text_color=C["texto2"], width=44)
-        self.lbl_zoom.pack(side="left")
-        boton(zoom, "+", lambda: self.cambiar_zoom(ZOOM_PASO), "fantasma", width=28).pack(side="left")
+        self._zoom_ctrl += [self.lbl_zoom, boton(zoom, "+", lambda: self.cambiar_zoom(ZOOM_PASO), "fantasma", width=28)]
+        for w in self._zoom_ctrl:
+            w.pack(side="left")
         self.btn_dos = boton(zoom, "▯▯", self.alternar_dos_paginas, "fantasma", width=36)
         self.btn_dos.pack(side="left", padx=(22, 0))
         self.btn_oscuro = boton(zoom, "🌙", self.alternar_oscuro, "fantasma", width=36)
@@ -104,10 +109,14 @@ class VistaLector(ctk.CTkFrame):
         self.btn_fav = ctk.CTkButton(b, text="☆", width=34, height=30, font=fuente(17), fg_color="transparent",
                                      hover_color=C["tarjeta_hover"], text_color=C["texto3"], command=self._favorito)
         self.btn_fav.grid(row=0, column=5)
-        self.lbl_sesion = ctk.CTkLabel(b, text="", font=fuente(12, "bold"), text_color=C["texto3"], width=170, anchor="e")
+        self.lbl_sesion = ctk.CTkLabel(b, text="", font=fuente(12, "bold"), text_color=C["texto3"], width=110, anchor="e")
         self.lbl_sesion.grid(row=0, column=6, padx=(4, 6))
         grupo = ctk.CTkFrame(b, fg_color="transparent")
         grupo.grid(row=0, column=7, padx=(0, 14))
+        self.btn_encima = boton(grupo, "📌", lambda: self.app.alternar_encima(), "suave", width=34)
+        self.btn_encima.pack(side="left", padx=(0, 4))
+        self.btn_compacto = boton(grupo, "🗗", lambda: self.app.alternar_compacto(), "suave", width=34)
+        self.btn_compacto.pack(side="left", padx=(0, 4))
         self.btn_lado = boton(grupo, "⇄", self.cambiar_lado, "suave", width=34)
         self.btn_lado.pack(side="left", padx=(0, 4))
         self.btn_tutor = boton(grupo, "🤖 Tutor", self.alternar_tutor, "suave", width=86)
@@ -213,10 +222,70 @@ class VistaLector(ctk.CTkFrame):
         col_visor, col_tutor = (0, 2) if self._lado == "derecha" else (2, 0)
         self.columnconfigure(col_visor, weight=1)
         self.columnconfigure(1, weight=0)
-        self.tutor.configure(width=self._ancho_tutor)
+        self.tutor.configure(width=self._ancho_efectivo())
+        self.tutor.grid_propagate(False)
         self.marco_visor.grid(row=1, column=col_visor, sticky="nsew")
         self.divisor.grid(row=1, column=1, sticky="ns")
         self.tutor.grid(row=1, column=col_tutor, sticky="nsew")
+        self.btn_tutor.configure(fg_color=C["acento_suave"] if self._tutor_visible else C["tarjeta_hover"])
+
+    def _ancho_efectivo(self) -> int:
+        """El tutor nunca debe dejar menos de ~380 px al PDF (ventanas estrechas)."""
+        total = self._ancho_total()
+        if total <= 1:
+            return self._ancho_tutor
+        return int(max(ANCHO_TUTOR_MIN, min(self._ancho_tutor, total - 380)))
+
+    def _ancho_total(self) -> int:
+        """Ancho realmente disponible para el lector (ventana menos barra lateral)."""
+        try:
+            lateral = self.app.lateral.winfo_width() if self.app.lateral.winfo_ismapped() else 0
+            return self.winfo_toplevel().winfo_width() - lateral
+        except Exception:
+            return self.winfo_width()
+
+    def _al_cambiar_tamano(self, e=None):
+        ancho = self._ancho_total()
+        self._angosto = ancho < 900
+        if self._tutor_visible and self.tutor.winfo_ismapped():
+            self.tutor.configure(width=self._ancho_efectivo())
+        nivel = 0 if ancho >= 1250 else 1 if ancho >= 1100 else 2 if ancho >= 1000 else 3
+        if nivel != getattr(self, "_nivel_barra", None):
+            self._nivel_barra = nivel
+            self._adaptar_barra(nivel)
+
+    def _adaptar_barra(self, nivel):
+        """Simplifica la barra superior cuando hay poco ancho (por ejemplo, media pantalla junto a VS Code)."""
+        def mostrar(w, si, **kw):
+            if si:
+                if not w.winfo_ismapped():
+                    w.grid(**kw)
+            else:
+                w.grid_remove()
+        mostrar(self.lbl_titulo, nivel == 0, row=0, column=1, sticky="w")
+        mostrar(self.menu_estado, nivel <= 1, row=0, column=4, padx=6)
+        mostrar(self.btn_fav, nivel <= 1, row=0, column=5)
+        # nivel 3 (≈ media pantalla): se quitan los controles de zoom, pero se conservan ▯▯ y 🌙
+        for w in self._zoom_ctrl:
+            w.pack_forget()
+        if nivel < 3:
+            for w in self._zoom_ctrl:
+                w.pack(side="left", before=self.btn_dos)
+        self.lbl_sesion.configure(width=110 if nivel < 3 else 70)
+
+    def set_modo_compacto(self, activo: bool):
+        """Compacto: oculta el tutor (sin cambiar tu preferencia guardada) y lo restaura al salir."""
+        if activo:
+            self._tutor_previo = self._tutor_visible
+            self._tutor_visible = False
+        elif self._tutor_previo is not None:
+            self._tutor_visible = self._tutor_previo
+            self._tutor_previo = None
+        self._disponer()
+        self.btn_compacto.configure(fg_color=C["acento"] if activo else C["tarjeta_hover"])
+
+    def pintar_encima(self, activo: bool):
+        self.btn_encima.configure(fg_color=C["acento"] if activo else C["tarjeta_hover"])
 
     def cambiar_lado(self):
         self._lado = "izquierda" if self._lado == "derecha" else "derecha"
@@ -504,14 +573,16 @@ class VistaLector(ctk.CTkFrame):
         r = self.app.rastreador
         if self.libro is None:
             return
+        t = tiempo.formatear(r.segundos_sesion)
         if r.activo:
-            self.lbl_sesion.configure(text=f"● Registrando · {tiempo.formatear(r.segundos_sesion)}", text_color=C["ok"])
+            self.lbl_sesion.configure(text=f"● {t}" if self._angosto else f"● Registrando · {t}", text_color=C["ok"])
         else:
-            self.lbl_sesion.configure(text=f"⏸ En pausa · {tiempo.formatear(r.segundos_sesion)}", text_color=C["texto3"])
+            self.lbl_sesion.configure(text=f"⏸ {t}" if self._angosto else f"⏸ En pausa · {t}", text_color=C["texto3"])
 
     # ================================================================== tutor IA
     def alternar_tutor(self):
         self._tutor_visible = not self._tutor_visible
+        db.guardar_config("lector_tutor_visible", "1" if self._tutor_visible else "0")
         self._disponer()
 
     def _escribir(self, quien, texto, tag_quien, tag_texto):

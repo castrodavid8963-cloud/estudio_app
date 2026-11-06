@@ -85,14 +85,24 @@ class VistaInicio(ctk.CTkScrollableFrame):
             ("ESTA SEMANA", tiempo.formatear(tiempo.segundos_semana()), f"total {tiempo.formatear(tiempo.total_segundos())}", None, C["ok"]),
             ("LIBROS", f"{cuentas['Completado']} leídos", f"{cuentas['En progreso']} en curso · {cuentas['Sin empezar']} por empezar", None, "#60a5fa"),
         ]
+        tarjetas = []
         for i, (rot, valor, detalle, prog, color) in enumerate(datos):
             t = tarjeta(marco)
-            t.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 7, 0 if i == 3 else 7))
+            tarjetas.append(t)
             ctk.CTkLabel(t, text=rot, font=fuente(10, "bold"), text_color=C["texto3"]).pack(anchor="w", padx=16, pady=(14, 0))
             ctk.CTkLabel(t, text=valor, font=fuente(22, "bold"), text_color=color).pack(anchor="w", padx=16)
             ctk.CTkLabel(t, text=detalle, font=fuente(11), text_color=C["texto2"], wraplength=150, justify="left").pack(anchor="w", padx=16, pady=(0, 6 if prog is not None else 14))
             if prog is not None:
                 barra(t, prog, color).pack(fill="x", padx=16, pady=(0, 14))
+
+        def distribuir(_e=None):
+            cols = 4 if marco.winfo_width() >= 700 else 2
+            for c in range(4):
+                marco.columnconfigure(c, weight=1 if c < cols else 0, uniform="est" if c < cols else "")
+            for i, t in enumerate(tarjetas):
+                t.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
+        marco.bind("<Configure>", distribuir)
+        distribuir()
 
     def _grafica(self, fila):
         marco = tarjeta(self)

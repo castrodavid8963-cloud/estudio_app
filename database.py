@@ -516,3 +516,26 @@ def fusionar_progreso(origen_id: int, destino_id: int):
 def marcar_no_disponible(recurso_id: int):
     with obtener_conexion() as conn:
         conn.execute("UPDATE recursos SET disponible = 0 WHERE id = ?", (recurso_id,))
+
+
+# ============================================================================ orden manual de las rutas
+def obtener_orden_rutas() -> list:
+    """Ids de rutas en el orden elegido por el usuario ([] = sin orden manual guardado)."""
+    crudo = obtener_config("rutas_orden") or ""
+    return [x for x in crudo.split("|") if x]
+
+
+def guardar_orden_rutas(orden: list):
+    guardar_config("rutas_orden", "|".join(orden))
+
+
+def mover_ruta(orden_actual: list, objetivo: str, delta: int) -> list:
+    """Devuelve (y guarda) `orden_actual` con `objetivo` movido `delta` posiciones (-1 sube, +1 baja)."""
+    orden = list(orden_actual)
+    if objetivo not in orden:
+        return orden
+    i = orden.index(objetivo)
+    j = max(0, min(len(orden) - 1, i + delta))
+    orden[i], orden[j] = orden[j], orden[i]
+    guardar_orden_rutas(orden)
+    return orden

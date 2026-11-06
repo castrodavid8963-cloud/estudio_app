@@ -40,7 +40,10 @@ class VistaRutas(ctk.CTkFrame):
         self.divisor.bind("<Enter>", lambda e: self.divisor.configure(bg=C["acento"]))
         self.divisor.bind("<Leave>", lambda e: self.divisor.configure(bg=C["borde"]))
         titulo(izq, "Rutas", 22).pack(anchor="w", padx=20, pady=(24, 0))
-        subtitulo(izq, "Elige un objetivo y sigue sus etapas.", 12).pack(anchor="w", padx=20, pady=(0, 10))
+        subtitulo(izq, "Elige un objetivo y sigue sus etapas. Usa ▲▼ para ordenarlas a tu gusto.", 12, wraplength=250
+                  ).pack(anchor="w", padx=20, pady=(0, 6))
+        self.btn_orden_defecto = boton(izq, "↺ Orden por defecto", self._orden_por_defecto, "fantasma", height=24, width=140)
+        self.btn_orden_defecto.pack(anchor="w", padx=14, pady=(0, 6))
         self.lista = ctk.CTkScrollableFrame(izq, fg_color="transparent", scrollbar_button_color=C["borde"])
         self.lista.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
@@ -69,7 +72,16 @@ class VistaRutas(ctk.CTkFrame):
         resumenes = roadmap.resumen_objetivos(self._libros, self._ajustes_todos())
         # La ruta fijada primero; luego por avance (las empezadas arriba)
         resumenes.sort(key=lambda r: (r["id"] != activo, -(r["progreso"] > 0), -r["progreso"]))
-        for r in resumenes:
+        guardado = db.obtener_orden_rutas()
+        if guardado:                                  # orden manual: gana sobre el automático
+            pos = {oid: i for i, oid in enumerate(guardado)}
+            resumenes.sort(key=lambda r: pos.get(r["id"], len(pos)))      # las nuevas van al final
+        self._orden_visible = [r["id"] for r in resumenes]
+        if guardado:
+            self.btn_orden_defecto.pack(anchor="w", padx=14, pady=(0, 6), before=self.lista._parent_frame)
+        else:
+            self.btn_orden_defecto.pack_forget()
+        for idx, r in enumerate(resumenes):
             sel = r["id"] == self.objetivo
             f = ctk.CTkFrame(self.lista, fg_color=C["acento_suave"] if sel else "transparent", corner_radius=12,
                              border_width=1 if sel else 0, border_color=C["acento"])
@@ -82,12 +94,29 @@ class VistaRutas(ctk.CTkFrame):
             self._etiquetas_nombre.append(nombre)
             ctk.CTkLabel(f, text=f"{r['completados']}/{r['total']} libros", font=fuente(11), text_color=C["texto2"],
                          anchor="w").grid(row=1, column=1, sticky="w", padx=8)
-            barra(f, r["progreso"], r["color"], alto=4).grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 10))
+            barra(f, r["progreso"], r["color"], alto=4).grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(2, 10))
             for w in [f] + f.winfo_children():
                 w.bind("<Button-1>", lambda e, oid=r["id"]: self._elegir(oid))
+            # Botones de orden (se crean después del enlace de clic para que no seleccionen la ruta)
+            mov = ctk.CTkFrame(f, fg_color="transparent")
+            mov.grid(row=0, column=2, rowspan=2, padx=(0, 6))
+            for texto, delta, habilitado in (("▲", -1, idx > 0), ("▼", 1, idx < len(resumenes) - 1)):
+                ctk.CTkButton(mov, text=texto, width=24, height=20, corner_radius=6, font=fuente(10),
+                              fg_color="transparent", hover_color=C["tarjeta_hover"],
+                              text_color=C["texto2"] if habilitado else C["pista"],
+                              state="normal" if habilitado else "disabled",
+                              command=lambda oid=r["id"], d=delta: self._mover(oid, d)).pack()
+
+    def _mover(self, oid, delta):
+        db.mover_ruta(self._orden_visible, oid, delta)
+        self._pintar_lista()
+
+    def _orden_por_defecto(self):
+        db.guardar_orden_rutas([])
+        self._pintar_lista()
 
     def _ancho_envoltura(self) -> int:
-        return max(90, self._ancho_lista - 130)
+        return max(90, self._ancho_lista - 165)
 
     def _arrastrar(self, e):
         ancho = e.x_root - self.izq.winfo_rootx()
