@@ -222,3 +222,35 @@ def obtener_ruta_guardada() -> str:
     except Exception:
         pass
     return os.path.expanduser("~")
+
+
+def detectar_cambios_rapido(ruta_raiz: str, excluir=EXCLUIDAS_POR_DEFECTO) -> dict:
+    """Compara lo que hay en disco con lo indexado SIN leer los archivos (rápido, solo nombres).
+
+    Devuelve {'nuevos': n, 'faltantes': n, 'ejemplos_nuevos': [...], 'ejemplos_faltantes': [...]}.
+    Un PDF movido o renombrado aparece como 1 nuevo + 1 faltante; al actualizar se reconoce por su huella.
+    """
+    res = {"nuevos": 0, "faltantes": 0, "ejemplos_nuevos": [], "ejemplos_faltantes": []}
+    if not ruta_raiz or not os.path.isdir(ruta_raiz):
+        return res
+    raiz_norm = _norm(ruta_raiz)
+    excluir_cf = {e.casefold() for e in (excluir or ())}
+    en_disco = {}
+    for root, dirs, files in os.walk(ruta_raiz):
+        dirs[:] = [d for d in dirs if not es_carpeta_basura_o_sistema(d)]
+        if _norm(root) == raiz_norm and excluir_cf:
+            dirs[:] = [d for d in dirs if d.casefold() not in excluir_cf]
+        for f in files:
+            if f.lower().endswith(".pdf"):
+                p = os.path.join(root, f)
+                en_disco[_norm(p)] = p
+    with obtener_conexion() as conn:
+        registrados = {_norm(r[0]): r[0] for r in
+                       conn.execute("SELECT ruta_local FROM recursos WHERE disponible = 1").fetchall()
+                       if r[0] and _esta_dentro(r[0], raiz_norm)}
+    nuevos = [p for k, p in en_disco.items() if k not in registrados]
+    faltantes = [p for k, p in registrados.items() if k not in en_disco]
+    res["nuevos"], res["faltantes"] = len(nuevos), len(faltantes)
+    res["ejemplos_nuevos"] = [os.path.basename(p) for p in nuevos[:3]]
+    res["ejemplos_faltantes"] = [os.path.basename(p) for p in faltantes[:3]]
+    return res

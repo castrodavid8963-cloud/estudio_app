@@ -473,3 +473,46 @@ def contar_por_estado() -> dict:
     for l in listar_libros(incluir_excluidos=False):
         cuentas[l["estado"]] = cuentas.get(l["estado"], 0) + 1
     return cuentas
+
+
+# ============================================================================ duplicados
+_RANGO_ESTADO = {"Sin empezar": 0, "En progreso": 1, "Completado": 2}
+
+
+def obtener_huellas() -> dict:
+    """{recurso_id: huella} de los libros disponibles (la huella se calcula al indexar)."""
+    with obtener_conexion() as conn:
+        filas = conn.execute("SELECT id, huella FROM recursos WHERE disponible = 1 AND huella IS NOT NULL").fetchall()
+    return {i: h for i, h in filas}
+
+
+def fusionar_progreso(origen_id: int, destino_id: int):
+    """Pasa el progreso del libro que se va a eliminar al que se conserva (sin perder nada:
+    el estado más avanzado, favorito, tiempo estudiado, chat y ajustes de rutas)."""
+    if origen_id == destino_id:
+        return
+    with obtener_conexion() as conn:
+        o = conn.execute("SELECT estado, es_favorito, ultima_pagina, total_paginas, ultima_apertura, historial_chat "
+                         "FROM recursos WHERE id = ?", (origen_id,)).fetchone()
+        d = conn.execute("SELECT estado, es_favorito, ultima_pagina, total_paginas, ultima_apertura, historial_chat "
+                         "FROM recursos WHERE id = ?", (destino_id,)).fetchone()
+        if not o or not d:
+            return
+        estado = max((o[0] or "Sin empezar", d[0] or "Sin empezar"), key=lambda e: _RANGO_ESTADO.get(e, 0))
+        favorito = 1 if (o[1] or d[1]) else 0
+        # Páginas: se conserva el avance mayor solo si ambos PDF tienen el mismo número de páginas
+        pagina, total = d[2] or 0, d[3] or 0
+        if (o[3] or 0) == total and (o[2] or 0) > pagina:
+            pagina = o[2]
+        apertura = max(filter(None, (o[4], d[4])), default=None)
+        chat = d[5] if d[5] else o[5]
+        conn.execute("UPDATE recursos SET estado=?, es_favorito=?, ultima_pagina=?, ultima_apertura=?, historial_chat=? "
+                     "WHERE id=?", (estado, favorito, pagina, apertura, chat, destino_id))
+        conn.execute("UPDATE sesiones_estudio SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
+        conn.execute("UPDATE OR IGNORE roadmap_ajustes SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
+        conn.execute("DELETE FROM roadmap_ajustes WHERE recurso_id = ?", (origen_id,))
+
+
+def marcar_no_disponible(recurso_id: int):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE recursos SET disponible = 0 WHERE id = ?", (recurso_id,))

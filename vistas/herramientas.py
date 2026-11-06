@@ -11,6 +11,7 @@ import gestor_biblioteca as gb
 import tiempo
 from library_scanner import escanear_e_indexar_biblioteca, EXCLUIDAS_POR_DEFECTO
 from ai_pdf import MODELO_POR_DEFECTO
+from vistas.duplicados import PestanaDuplicados
 from tema import C, fuente, tarjeta, titulo, subtitulo, boton, barra, chip, recortar, nombre_area
 
 MODOS = ["Organizar", "Renombrar", "Ambas", "Reporte", "Deshacer"]
@@ -29,6 +30,7 @@ class VistaHerramientas(ctk.CTkFrame):
         super().__init__(padre, fg_color="transparent")
         self.app = app
         self._indexando = False
+        self.ultimo_resultado = None
         self._trabajando = False
         self._plan = None
         self._cancelar = threading.Event()
@@ -41,10 +43,12 @@ class VistaHerramientas(ctk.CTkFrame):
                                    segmented_button_selected_hover_color=C["acento_hover"],
                                    segmented_button_unselected_hover_color=C["tarjeta_hover"], corner_radius=14)
         self.tabs.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        for nombre in ("Biblioteca", "Organizar PDFs", "Ajustes"):
+        for nombre in ("Biblioteca", "Organizar PDFs", "Duplicados", "Ajustes"):
             self.tabs.add(nombre)
         self._tab_biblioteca(self.tabs.tab("Biblioteca"))
         self._tab_gestor(self.tabs.tab("Organizar PDFs"))
+        self.pestana_duplicados = PestanaDuplicados(self.tabs.tab("Duplicados"), app, self)
+        self.pestana_duplicados.pack(fill="both", expand=True)
         self._tab_ajustes(self.tabs.tab("Ajustes"))
 
     def al_mostrar(self, pestaña=None):
@@ -147,8 +151,9 @@ class VistaHerramientas(ctk.CTkFrame):
             self.lbl_idx.configure(text=f"✓ Listo: {nuevos} nuevos · {reub} reubicados · {nd} no disponibles",
                                    text_color=C["ok"])
         self._refrescar_resumen()
+        self.ultimo_resultado = None if error else r
         if al_terminar:
-            al_terminar()
+            al_terminar(self.ultimo_resultado)
 
     # ================================================================== pestaña Organizar PDFs
     def _tab_gestor(self, tab):
@@ -429,7 +434,7 @@ class VistaHerramientas(ctk.CTkFrame):
             texto += f" {len(r['errores'])} con error (ej.: {r['errores'][0]})"
         self._limpiar_plan()
         self.lbl_estado_g.configure(text=texto + "  Actualizando la biblioteca…", text_color=C["ok"])
-        self.indexar(al_terminar=lambda: self.lbl_estado_g.configure(
+        self.indexar(al_terminar=lambda *_: self.lbl_estado_g.configure(
             text=texto + "  Biblioteca reindexada: tu progreso y favoritos se conservaron.", text_color=C["ok"]))
 
     # ---------------------------------------------------------------- reporte y deshacer
@@ -485,7 +490,7 @@ class VistaHerramientas(ctk.CTkFrame):
             texto += f" {len(r['errores'])} no se pudieron revertir."
         self.lbl_estado_g.configure(text=texto + "  Actualizando la biblioteca…", text_color=C["ok"])
         self._cargar_historiales()
-        self.indexar(al_terminar=lambda: self.lbl_estado_g.configure(text=texto, text_color=C["ok"]))
+        self.indexar(al_terminar=lambda *_: self.lbl_estado_g.configure(text=texto, text_color=C["ok"]))
 
     # ================================================================== pestaña Ajustes
     def _tab_ajustes(self, tab):

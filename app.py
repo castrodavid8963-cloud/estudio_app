@@ -1,5 +1,6 @@
 """Hub de Estudio: biblioteca, rutas de estudio, lector con tutor IA y registro automático de tiempo."""
 import threading
+import time
 import tkinter as tk
 
 import customtkinter as ctk
@@ -7,6 +8,7 @@ import customtkinter as ctk
 import database as db
 import tiempo
 from portadas import GestorPortadas
+from library_scanner import detectar_cambios_rapido
 from services import asegurar_ollama_activo
 from tema import C, fuente, configurar, barra
 from vistas.biblioteca import VistaBiblioteca
@@ -43,6 +45,9 @@ class AppEstudio(ctk.CTk):
         self._vista_actual = None
         self._vista_previa = "inicio"
         self._tick_n = 0
+        self.cambios_pendientes = 0
+        self._comprobando = False
+        self._ultima_comprobacion = 0.0
 
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
@@ -73,6 +78,8 @@ class AppEstudio(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.al_cerrar)
         self.ir("inicio")
         self.after(200, self._iniciar_hilo_ollama)
+        self.after(1500, self.comprobar_cambios)
+        self.bind("<FocusIn>", lambda e: self.comprobar_cambios() if e.widget is self else None)
         self.after(1000, self._tick)
 
     @property
@@ -142,6 +149,8 @@ class AppEstudio(ctk.CTk):
         vista = self.vistas[nombre]
         vista.grid()
         vista.al_mostrar(**kw)
+        if nombre == "biblioteca":
+            self.comprobar_cambios()
         for clave, b in self.botones_nav.items():
             activo = clave == nombre
             b.configure(fg_color=C["acento_suave"] if activo else "transparent",
@@ -169,6 +178,60 @@ class AppEstudio(ctk.CTk):
         if volver:
             self._vista_actual = None
             self.ir(self._vista_previa)
+
+    # ------------------------------------------------------------------ cambios en la biblioteca
+    def comprobar_cambios(self, forzar=False):
+        """Compara en segundo plano lo que hay en disco con lo indexado (rápido, no lee los PDF).
+        Se llama al abrir la app, al abrir la Biblioteca y al volver a la ventana (máx. 1 vez por minuto)."""
+        raiz = db.obtener_ruta_biblioteca()
+        ahora = time.monotonic()
+        if (not raiz or self._comprobando or self.vistas["herramientas"]._indexando
+                or (not forzar and ahora - self._ultima_comprobacion < 60)):
+            return
+        self._comprobando = True
+        self._ultima_comprobacion = ahora
+
+        def tarea():
+            try:
+                info = detectar_cambios_rapido(raiz)
+            except Exception as e:
+                print(f"[Cambios] {e}")
+                info = None
+            self._en_ui(self._cambios_detectados, info)
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _cambios_detectados(self, info):
+        self._comprobando = False
+        if info is None:
+            return
+        self.cambios_pendientes = info["nuevos"] + info["faltantes"]
+        self._pintar_insignia()
+        self.vistas["biblioteca"].mostrar_cambios(info)
+
+    def _pintar_insignia(self):
+        self.botones_nav["biblioteca"].configure(
+            text="  📚   Biblioteca" + (f"   ● {self.cambios_pendientes}" if self.cambios_pendientes else ""))
+
+    def actualizar_biblioteca(self):
+        """Reindexa la carpeta raíz (no mueve ni borra nada) y refresca la pantalla actual."""
+        h = self.vistas["herramientas"]
+        if not db.obtener_ruta_biblioteca():
+            self.ir("herramientas", pestaña="Biblioteca")
+            return
+        if h._indexando:
+            return
+        self.vistas["biblioteca"].marcar_actualizando(True)
+        h.indexar(al_terminar=self._tras_actualizar)
+
+    def _tras_actualizar(self, resultado):
+        self.cambios_pendientes = 0
+        self._pintar_insignia()
+        b = self.vistas["biblioteca"]
+        b.marcar_actualizando(False)
+        b.mostrar_resultado(resultado)
+        if not self.lector_visible and self._vista_actual in ("inicio", "biblioteca", "rutas"):
+            self.vistas[self._vista_actual].al_mostrar()
+        self._ultima_comprobacion = time.monotonic()
 
     # ------------------------------------------------------------------ tiempo de estudio
     def _actividad_global(self):

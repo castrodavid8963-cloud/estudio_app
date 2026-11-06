@@ -92,9 +92,9 @@ class VistaLector(ctk.CTkFrame):
         self.lbl_zoom.pack(side="left")
         boton(zoom, "+", lambda: self.cambiar_zoom(ZOOM_PASO), "fantasma", width=28).pack(side="left")
         self.btn_dos = boton(zoom, "▯▯", self.alternar_dos_paginas, "fantasma", width=36)
-        self.btn_dos.pack(side="left", padx=(8, 0))
+        self.btn_dos.pack(side="left", padx=(22, 0))
         self.btn_oscuro = boton(zoom, "🌙", self.alternar_oscuro, "fantasma", width=36)
-        self.btn_oscuro.pack(side="left")
+        self.btn_oscuro.pack(side="left", padx=(10, 0))
 
         self.var_estado = ctk.StringVar(value="Sin empezar")
         self.menu_estado = ctk.CTkOptionMenu(b, variable=self.var_estado, values=list(db.ESTADOS), width=138, height=30,

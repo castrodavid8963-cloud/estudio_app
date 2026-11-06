@@ -37,14 +37,27 @@ class VistaBiblioteca(ctk.CTkFrame):
         titulo(cab, "Biblioteca", 26).pack(side="left")
         self.lbl_total = subtitulo(cab, "")
         self.lbl_total.pack(side="left", padx=14, pady=(8, 0))
+        self.btn_actualizar = boton(cab, "🔄  Actualizar", lambda: self.app.actualizar_biblioteca(), "suave", width=130)
+        self.btn_actualizar.pack(side="right")
 
+        # Aviso de cambios en disco / resultado de la última actualización
+        self.banner = ctk.CTkFrame(self, fg_color=C["acento_suave"], corner_radius=10, border_width=1, border_color=C["acento"])
+        self.lbl_banner = ctk.CTkLabel(self.banner, text="", font=fuente(12), text_color=C["texto"], anchor="w", justify="left")
+        self.lbl_banner.pack(side="left", padx=14, pady=8)
+        self.btn_banner = boton(self.banner, "Actualizar ahora", lambda: self.app.actualizar_biblioteca(), width=130, height=28)
+        self.btn_banner.pack(side="right", padx=10)
+        self._job_banner = None
+
+        self._anclaje_banner = ctk.CTkFrame(self, fg_color="transparent", height=1)
+        self._anclaje_banner.pack(fill="x")
         barra_f = ctk.CTkFrame(self, fg_color="transparent")
         barra_f.pack(fill="x", padx=28, pady=(0, 10))
-        self.var_busqueda = ctk.StringVar()
-        self.var_busqueda.trace_add("write", lambda *_: self._programar())
-        ctk.CTkEntry(barra_f, textvariable=self.var_busqueda, placeholder_text="🔍  Buscar por título…", width=280,
+        # (sin textvariable: con él, CTkEntry no muestra el texto de ayuda)
+        self.entrada_busqueda = ctk.CTkEntry(barra_f, placeholder_text="🔍  Buscar por título…", width=280,
                      height=36, corner_radius=10, fg_color=C["tarjeta"], border_color=C["borde"],
-                     placeholder_text_color=C["texto3"]).pack(side="left")
+                     placeholder_text_color=C["texto3"])
+        self.entrada_busqueda.pack(side="left")
+        self.entrada_busqueda.bind("<KeyRelease>", lambda e: self._programar())
         self.var_area = ctk.StringVar(value=TODAS)
         self.menu_area = ctk.CTkOptionMenu(barra_f, variable=self.var_area, values=[TODAS], width=230, height=36,
                                            fg_color=C["tarjeta"], button_color=C["tarjeta_hover"],
@@ -67,6 +80,60 @@ class VistaBiblioteca(ctk.CTkFrame):
         self._ancho_previo = 0
         self.bind("<Configure>", self._al_redimensionar)
 
+    # ------------------------------------------------------------------ cambios en la biblioteca
+    def _poner_banner(self, texto, boton_visible, color=None):
+        if self._job_banner:
+            self.after_cancel(self._job_banner)
+            self._job_banner = None
+        self.lbl_banner.configure(text=texto)
+        if boton_visible:
+            self.btn_banner.pack(side="right", padx=10)
+        else:
+            self.btn_banner.pack_forget()
+        self.banner.configure(border_color=color or C["acento"])
+        self.banner.pack(fill="x", padx=28, pady=(0, 10), before=self._anclaje_banner)
+
+    def ocultar_banner(self):
+        self.banner.pack_forget()
+
+    def mostrar_cambios(self, info):
+        """`info` viene de detectar_cambios_rapido. Sin cambios: se oculta el aviso."""
+        n, f = info["nuevos"], info["faltantes"]
+        if not n and not f:
+            if not self._job_banner:
+                self.ocultar_banner()
+            return
+        partes = []
+        if n:
+            partes.append(f"{n} archivo{'s' if n != 1 else ''} nuevo{'s' if n != 1 else ''}")
+        if f:
+            partes.append(f"{f} que ya no está{'n' if f != 1 else ''} en su sitio")
+        ej = info["ejemplos_nuevos"][:2]
+        extra = f"  (ej.: {', '.join(ej)})" if ej else ""
+        self._poner_banner("🔔  Detecté cambios en tu biblioteca: " + " y ".join(partes) + "." + extra, True, C["aviso"])
+
+    def marcar_actualizando(self, si):
+        self.btn_actualizar.configure(state="disabled" if si else "normal", text="⏳  Actualizando…" if si else "🔄  Actualizar")
+        if si:
+            self._poner_banner("Revisando la carpeta de tu biblioteca…", False)
+
+    def mostrar_resultado(self, r):
+        if r is None:
+            self._poner_banner("⚠️  No se pudo actualizar la biblioteca. Revisa la carpeta en Herramientas.", False, C["error"])
+            return
+        nuevos, reub, nd = r
+        if not (nuevos or reub or nd):
+            self._poner_banner("✓  Todo al día: no hubo cambios en tu biblioteca.", False, C["ok"])
+        else:
+            partes = [t for t in (f"{nuevos} nuevos" if nuevos else "", f"{reub} movidos o renombrados (con su progreso)" if reub else "",
+                                  f"{nd} que ya no están" if nd else "") if t]
+            self._poner_banner("✓  Biblioteca actualizada: " + " · ".join(partes) + ".", False, C["ok"])
+        self._job_banner = self.after(7000, self._fin_banner)
+
+    def _fin_banner(self):
+        self._job_banner = None
+        self.ocultar_banner()
+
     # ------------------------------------------------------------------ datos
     def al_mostrar(self, area=None):
         self._libros = db.listar_libros()
@@ -86,7 +153,7 @@ class VistaBiblioteca(ctk.CTkFrame):
 
     def _aplicar(self):
         self._job = None
-        q = self.var_busqueda.get().strip().casefold()
+        q = self.entrada_busqueda.get().strip().casefold()
         area, estado, orden = self.var_area.get(), self.seg.get(), self.var_orden.get()
         res = []
         for l in self._libros:
