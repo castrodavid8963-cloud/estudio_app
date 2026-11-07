@@ -2,6 +2,8 @@ from __future__ import annotations
 from datetime import datetime
 import os
 import sqlite3
+
+import capitulos as cap
 from contextlib import contextmanager
 
 # La BD vive junto al código, sin importar desde dónde se lance la app.
@@ -149,6 +151,26 @@ def inicializar_db():
             )
         """)
 
+        # ---------------- Capítulos y modo de lectura ----------------
+        # modo_lectura: 'auto' | 'completo' | 'capitulos'. toc_leido: 1 cuando ya se leyó el índice del PDF.
+        _agregar_columna_si_falta(cursor, "recursos", "modo_lectura", "TEXT DEFAULT 'auto'")
+        _agregar_columna_si_falta(cursor, "recursos", "toc_leido", "INTEGER DEFAULT 0")
+        cursor.execute("UPDATE recursos SET modo_lectura = 'auto' WHERE modo_lectura IS NULL")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS capitulos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recurso_id INTEGER NOT NULL,
+                orden INTEGER NOT NULL,
+                titulo TEXT NOT NULL,
+                nivel INTEGER DEFAULT 1,
+                pagina_ini INTEGER NOT NULL,
+                pagina_fin INTEGER NOT NULL,
+                incluido INTEGER DEFAULT 1,
+                hecho INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_capitulos_recurso ON capitulos(recurso_id)")
+
         # ---------------- Notas y subrayados ----------------
         # tipo: 'nota' | 'subrayado' | 'sesion' (nota rápida al cerrar el lector).
         # rect: "x0,y0,x1,y1" normalizado (0-1) respecto a la página; solo en subrayados.
@@ -261,20 +283,32 @@ def _fila_a_libro(f, raiz: str) -> dict:
         avance = 0.0
     nombre = f[3] or ""
     titulo = nombre[:-4] if nombre.lower().endswith(".pdf") else nombre
+    modo, toc_leido = f[11] or "auto", bool(f[12])
+    caps_n, caps_total, caps_hechos, max_pag = (f[13] or 0), (f[14] or 0), (f[15] or 0), (f[16] or 0)
+    efectivo, motivo = cap.modo_efectivo(modo, titulo, max(paginas, max_pag), caps_n, toc_leido)
+    if efectivo == "capitulos" and caps_total > 0 and estado != "Completado":
+        avance = caps_hechos / caps_total
     return {
         "id": f[0], "semana_id": f[1], "materia_id": f[2], "nombre_archivo": nombre,
         "titulo": titulo, "ruta": f[4], "estado": estado, "favorito": bool(f[6]),
         "ultima_pagina": ultima, "total_paginas": paginas, "ultima_apertura": f[9],
         "materia": f[10], "area": area, "subcarpeta": sub, "avance": avance,
+        "modo_lectura": modo, "modo_efectivo": efectivo, "modo_motivo": motivo, "toc_leido": toc_leido,
+        "caps_n": caps_n, "caps_total": caps_total, "caps_hechos": caps_hechos,
     }
 
 
 _SQL_LIBROS = """
     SELECT r.id, r.semana_id, s.materia_id, r.nombre_archivo, r.ruta_local, r.estado,
-           r.es_favorito, r.ultima_pagina, r.total_paginas, r.ultima_apertura, m.nombre
+           r.es_favorito, r.ultima_pagina, r.total_paginas, r.ultima_apertura, m.nombre,
+           r.modo_lectura, r.toc_leido, cs.n, cs.inc, cs.hec, cs.maxp
     FROM recursos r
     JOIN semanas s ON s.id = r.semana_id
     JOIN materias m ON m.id = s.materia_id
+    LEFT JOIN (SELECT recurso_id, COUNT(*) AS n, SUM(incluido) AS inc,
+                      SUM(CASE WHEN incluido = 1 AND hecho = 1 THEN 1 ELSE 0 END) AS hec,
+                      MAX(pagina_fin) AS maxp
+               FROM capitulos GROUP BY recurso_id) cs ON cs.recurso_id = r.id
 """
 
 
@@ -310,6 +344,10 @@ def actualizar_estado_libro(recurso_id: int, estado: str):
         raise ValueError(f"Estado inválido: {estado}")
     with obtener_conexion() as conn:
         conn.execute("UPDATE recursos SET estado = ? WHERE id = ?", (estado, recurso_id))
+        if estado == "Completado":          # marcar el libro como leído marca todos sus capítulos
+            conn.execute("UPDATE capitulos SET hecho = 1 WHERE recurso_id = ?", (recurso_id,))
+        elif estado == "Sin empezar":
+            conn.execute("UPDATE capitulos SET hecho = 0 WHERE recurso_id = ?", (recurso_id,))
 
 
 def alternar_favorito(recurso_id: int) -> bool:
@@ -336,6 +374,18 @@ def marcar_apertura(recurso_id: int):
         )
 
 
+def _modo_efectivo_conn(conn, recurso_id: int, paginas: int = 0) -> str:
+    f = conn.execute("SELECT nombre_archivo, modo_lectura, toc_leido, total_paginas FROM recursos WHERE id = ?",
+                     (recurso_id,)).fetchone()
+    if not f:
+        return "completo"
+    n, maxp = conn.execute("SELECT COUNT(*), COALESCE(MAX(pagina_fin), 0) FROM capitulos WHERE recurso_id = ?",
+                           (recurso_id,)).fetchone()
+    nombre = f[0] or ""
+    titulo = nombre[:-4] if nombre.lower().endswith(".pdf") else nombre
+    return cap.modo_efectivo(f[1] or "auto", titulo, max(paginas or f[3] or 0, maxp), n, bool(f[2]))[0]
+
+
 def guardar_progreso_lectura(recurso_id: int, pagina: int, total: int) -> str:
     """Guarda la página (1-based) donde va el lector. Devuelve el estado resultante.
 
@@ -349,8 +399,9 @@ def guardar_progreso_lectura(recurso_id: int, pagina: int, total: int) -> str:
         if not fila:
             return "Sin empezar"
         estado = fila[0] or "Sin empezar"
+        por_capitulos = _modo_efectivo_conn(conn, recurso_id, total) == "capitulos"
         if estado != "Completado":
-            if total and pagina / total >= UMBRAL_COMPLETADO:
+            if not por_capitulos and total and pagina / total >= UMBRAL_COMPLETADO:
                 estado = "Completado"
             else:
                 estado = "En progreso"
@@ -530,6 +581,14 @@ def fusionar_progreso(origen_id: int, destino_id: int):
         conn.execute("UPDATE sesiones_estudio SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         conn.execute("UPDATE OR IGNORE roadmap_ajustes SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         conn.execute("DELETE FROM roadmap_ajustes WHERE recurso_id = ?", (origen_id,))
+        o_caps = conn.execute("SELECT COUNT(*) FROM capitulos WHERE recurso_id = ?", (origen_id,)).fetchone()[0]
+        d_caps = conn.execute("SELECT COUNT(*) FROM capitulos WHERE recurso_id = ?", (destino_id,)).fetchone()[0]
+        if o_caps and not d_caps:          # el que se conserva no tenía índice leído: hereda el del otro
+            conn.execute("UPDATE capitulos SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
+            conn.execute("UPDATE recursos SET toc_leido = 1, modo_lectura = (SELECT modo_lectura FROM recursos "
+                         "WHERE id = ?) WHERE id = ?", (origen_id, destino_id))
+        else:
+            conn.execute("DELETE FROM capitulos WHERE recurso_id = ?", (origen_id,))
         if (o[3] or 0) == total:           # mismas páginas: las notas siguen siendo válidas
             conn.execute("UPDATE notas SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         else:
@@ -658,3 +717,89 @@ def exportar_notas_markdown(recurso_id: int | None = None) -> str:
     if not hay:
         lineas.append("_Todavía no hay notas._")
     return "\n".join(lineas).rstrip() + "\n"
+
+
+# ============================================================================ capítulos
+def indice_leido(recurso_id: int) -> bool:
+    with obtener_conexion() as conn:
+        f = conn.execute("SELECT toc_leido FROM recursos WHERE id = ?", (recurso_id,)).fetchone()
+    return bool(f and f[0])
+
+
+def guardar_capitulos(recurso_id: int, capitulos: list):
+    """Guarda el índice leído del PDF (solo la primera vez: después se respetan tus cambios)."""
+    with obtener_conexion() as conn:
+        f = conn.execute("SELECT toc_leido FROM recursos WHERE id = ?", (recurso_id,)).fetchone()
+        if not f or f[0]:
+            return
+        conn.execute("DELETE FROM capitulos WHERE recurso_id = ?", (recurso_id,))
+        conn.executemany(
+            "INSERT INTO capitulos (recurso_id, orden, titulo, nivel, pagina_ini, pagina_fin, incluido, hecho) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            [(recurso_id, i, c["titulo"], c["nivel"], c["pagina_ini"], c["pagina_fin"], c["incluido"])
+             for i, c in enumerate(capitulos)])
+        conn.execute("UPDATE recursos SET toc_leido = 1 WHERE id = ?", (recurso_id,))
+
+
+def listar_capitulos(recurso_id: int) -> list:
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        filas = conn.execute("SELECT * FROM capitulos WHERE recurso_id = ? ORDER BY orden", (recurso_id,)).fetchall()
+    return [dict(f) for f in filas]
+
+
+def fijar_modo_lectura(recurso_id: int, modo: str):
+    if modo not in cap.MODOS:
+        raise ValueError(f"Modo inválido: {modo}")
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE recursos SET modo_lectura = ? WHERE id = ?", (modo, recurso_id))
+    recalcular_estado_capitulos(recurso_id)
+
+
+def marcar_capitulos(recurso_id: int, ids: list, campo: str, valor: bool):
+    """campo: 'hecho' (leído) o 'incluido' (cuenta para el progreso del libro)."""
+    if campo not in ("hecho", "incluido") or not ids:
+        return
+    with obtener_conexion() as conn:
+        conn.executemany(f"UPDATE capitulos SET {campo} = ? WHERE id = ? AND recurso_id = ?",
+                         [(1 if valor else 0, i, recurso_id) for i in ids])
+    recalcular_estado_capitulos(recurso_id)
+
+
+def marcar_todos_incluidos(recurso_id: int, valor: bool):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE capitulos SET incluido = ? WHERE recurso_id = ?", (1 if valor else 0, recurso_id))
+    recalcular_estado_capitulos(recurso_id)
+
+
+def recalcular_estado_capitulos(recurso_id: int) -> str | None:
+    """En modo «por capítulos»: Completado cuando todos los capítulos que cuentan están hechos;
+    si se desmarca alguno, vuelve a En progreso. Devuelve el estado resultante (o None si no aplica)."""
+    with obtener_conexion() as conn:
+        if _modo_efectivo_conn(conn, recurso_id) != "capitulos":
+            return None
+        inc, hec = conn.execute(
+            "SELECT COALESCE(SUM(incluido), 0), COALESCE(SUM(CASE WHEN incluido = 1 AND hecho = 1 THEN 1 ELSE 0 END), 0) "
+            "FROM capitulos WHERE recurso_id = ?", (recurso_id,)).fetchone()
+        estado = conn.execute("SELECT estado FROM recursos WHERE id = ?", (recurso_id,)).fetchone()[0] or "Sin empezar"
+        if inc <= 0:
+            return estado
+        if hec >= inc:
+            nuevo = "Completado"
+        elif estado == "Completado" or hec > 0:
+            nuevo = "En progreso"
+        else:
+            nuevo = estado
+        if nuevo != estado:
+            conn.execute("UPDATE recursos SET estado = ? WHERE id = ?", (nuevo, recurso_id))
+        return nuevo
+
+
+def libros_sin_indice(solo_incluidos: bool = True) -> list:
+    """(id, ruta) de los libros disponibles cuyo índice aún no se leyó."""
+    with obtener_conexion() as conn:
+        filas = conn.execute("SELECT id, ruta_local FROM recursos WHERE disponible = 1 AND COALESCE(toc_leido, 0) = 0").fetchall()
+    if not solo_incluidos:
+        return filas
+    excluidas, raiz = areas_excluidas(), obtener_ruta_biblioteca()
+    return [(i, r) for i, r in filas if not esta_excluido(r, raiz, excluidas)]

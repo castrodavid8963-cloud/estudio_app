@@ -226,7 +226,7 @@ class AppEstudio(ctk.CTk):
                         text_color=C["texto"] if activo else C["texto2"])
         self._refrescar_pie()
 
-    def abrir_libro(self, recurso_id: int):
+    def abrir_libro(self, recurso_id: int, panel: str = None):
         libro = db.obtener_libro(recurso_id)
         if not libro:
             return
@@ -237,6 +237,8 @@ class AppEstudio(ctk.CTk):
         self.contenedor.grid_remove()
         self.lector.grid()
         self.lector.abrir(libro)
+        if panel:
+            self.lector.mostrar_panel(panel, forzar=True)
         self.lector.focus_set()
 
     def volver_del_lector(self):

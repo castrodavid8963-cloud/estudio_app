@@ -9,12 +9,14 @@ from tkinter import filedialog
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
+import capitulos as cap
 import database as db
 import tiempo
 from ai_pdf import extraer_fragmentos_pdf, IndiceLibro, consultar_ollama_con_contexto, ErrorOllama
 from pdf_core import fitz, PYMUPDF_LOCK
 from tema import C, ESTADO_COLOR, ESTADO_ICONO, fuente, titulo, subtitulo, boton, recortar
 from vistas.notas import PanelNotas, DialogoTexto
+from vistas.capitulos_panel import PanelCapitulos
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_PASO = 0.5, 3.0, 0.15
 MAX_HISTORIAL_GUARDADO = 200
@@ -52,7 +54,9 @@ class VistaLector(ctk.CTkFrame):
         self._angosto = False
         self._tutor_permitido = True
         # notas y subrayados
-        self._panel_activo = "notas" if db.obtener_config("lector_panel") == "notas" else "tutor"
+        self._panel_activo = db.obtener_config("lector_panel") if db.obtener_config("lector_panel") in ("notas", "capitulos") else "tutor"
+        self._caps = []
+        self._salto = False
         self._notas_libro = []
         self._res_por_pagina = {}      # {pagina: [(x0, y0, x1, y1, color)]} normalizado 0-1
         self._modo_sub = False
@@ -74,6 +78,7 @@ class VistaLector(ctk.CTkFrame):
         self._crear_visor()
         self._crear_tutor()
         self.notas_panel = PanelNotas(self, self, self._ancho_tutor)
+        self.caps_panel = PanelCapitulos(self, self, self._ancho_tutor)
         self._crear_divisor()
         self._enlazar_eventos()
         self.bind("<Configure>", self._al_cambiar_tamano)
@@ -125,6 +130,8 @@ class VistaLector(ctk.CTkFrame):
         self.lbl_sesion.grid(row=0, column=6, padx=(4, 6))
         grupo = ctk.CTkFrame(b, fg_color="transparent")
         grupo.grid(row=0, column=7, padx=(0, 14))
+        self.btn_caps = boton(grupo, "📑", lambda: self.mostrar_panel("capitulos"), "suave", width=34)
+        self.btn_caps.pack(side="left", padx=(0, 4))
         self.btn_notas = boton(grupo, "📝", lambda: self.mostrar_panel("notas"), "suave", width=34)
         self.btn_notas.pack(side="left", padx=(0, 4))
         self.btn_encima = boton(grupo, "📌", lambda: self.app.alternar_encima(), "suave", width=34)
@@ -232,7 +239,7 @@ class VistaLector(ctk.CTkFrame):
     def _disponer(self):
         """Coloca visor, divisor y tutor según el lado elegido (cada columna con su peso)."""
         panel = self._panel()
-        for w in (self.marco_visor, self.divisor, self.tutor, self.notas_panel):
+        for w in (self.marco_visor, self.divisor, self.tutor, self.notas_panel, self.caps_panel):
             w.grid_forget()
         for c in range(3):
             self.columnconfigure(c, weight=0, minsize=0)
@@ -250,20 +257,29 @@ class VistaLector(ctk.CTkFrame):
         self.divisor.grid(row=1, column=1, sticky="ns")
         panel.grid(row=1, column=col_tutor, sticky="nsew")
         self._pintar_paneles()
-        if self._panel_activo == "notas":
-            self.notas_panel.refrescar()
+        self._refrescar_panel()
 
     def _panel(self):
-        return self.notas_panel if self._panel_activo == "notas" else self.tutor
+        return {"notas": self.notas_panel, "capitulos": self.caps_panel}.get(self._panel_activo, self.tutor)
+
+    def _refrescar_panel(self):
+        if not self._tutor_visible:
+            return
+        if self._panel_activo == "notas":
+            self.notas_panel.refrescar()
+        elif self._panel_activo == "capitulos":
+            self.caps_panel.refrescar()
 
     def _pintar_paneles(self):
-        for btn, nombre in ((self.btn_tutor, "tutor"), (self.btn_notas, "notas")):
+        for btn, nombre in ((self.btn_tutor, "tutor"), (self.btn_notas, "notas"), (self.btn_caps, "capitulos")):
             activo = self._tutor_visible and self._panel_activo == nombre
             btn.configure(fg_color=C["acento_suave"] if activo else C["tarjeta_hover"])
 
-    def mostrar_panel(self, nombre: str):
-        """Muestra el panel pedido; si ya estaba a la vista, lo oculta."""
+    def mostrar_panel(self, nombre: str, forzar: bool = False):
+        """Muestra el panel pedido; si ya estaba a la vista, lo oculta (salvo con forzar)."""
         if self._tutor_visible and self._panel_activo == nombre:
+            if forzar:
+                return
             self._tutor_visible = False
         else:
             self._tutor_visible = True
@@ -413,6 +429,7 @@ class VistaLector(ctk.CTkFrame):
         self._pagina = self._normalizar(inicio)
         self.after(60, lambda: self._renderizar(scroll="inicio"))
         self._preparar_tutor()
+        self._cargar_capitulos()
         self.recargar_notas()
 
     def cerrar(self):
@@ -434,7 +451,7 @@ class VistaLector(ctk.CTkFrame):
         self._indice = None
         self._ia_ocupada = False
         self.libro = None
-        self._notas_libro, self._res_por_pagina = [], {}
+        self._notas_libro, self._res_por_pagina, self._caps = [], {}, []
         self.alternar_subrayado(False)
 
     # ================================================================== visor
@@ -539,8 +556,7 @@ class VistaLector(ctk.CTkFrame):
         x = max(16, (w_lienzo - img.width) // 2)
         self._x_img = x
         self._geoms = colocados or []
-        if self._panel_activo == "notas" and self._tutor_visible:
-            self.notas_panel.refrescar()
+        self._refrescar_panel()
         if self._id_img:
             self.lienzo.delete(self._id_img)
         self._id_img = self.lienzo.create_image(x, 16, image=self._foto, anchor="nw")
@@ -557,8 +573,12 @@ class VistaLector(ctk.CTkFrame):
         self._actividad(forzar=True)
         if pagina == self._pagina:
             return
+        previa = self._ultima_visible()
+        paso_normal = abs(pagina - self._pagina) <= self._paso()
         self._pagina = pagina
         self._renderizar(scroll=scroll)
+        if paso_normal:               # solo avanzar leyendo cuenta; los saltos (índice, notas) no marcan capítulos
+            self._auto_capitulos(previa)
         if self._guardar_job:
             self.after_cancel(self._guardar_job)
         self._guardar_job = self.after(900, self._guardar_progreso)
@@ -653,6 +673,64 @@ class VistaLector(ctk.CTkFrame):
             self.lbl_sesion.configure(text=f"● {t}" if self._angosto else f"● Registrando · {t}", text_color=C["ok"])
         else:
             self.lbl_sesion.configure(text=f"⏸ {t}" if self._angosto else f"⏸ En pausa · {t}", text_color=C["texto3"])
+
+    # ================================================================== capítulos
+    def capitulos(self) -> list:
+        return self._caps
+
+    def _cargar_capitulos(self):
+        """Lee el índice del PDF la primera vez que se abre (en memoria, es instantáneo) y carga los capítulos."""
+        if self.libro is None or self._doc is None:
+            return
+        if not db.indice_leido(self.libro["id"]):
+            try:
+                with PYMUPDF_LOCK:
+                    toc = self._doc.get_toc(simple=True)
+                db.guardar_capitulos(self.libro["id"], cap.extraer_capitulos(toc, self._total))
+            except Exception:
+                db.guardar_capitulos(self.libro["id"], [])
+        self.recargar_capitulos()
+
+    def recargar_capitulos(self):
+        if self.libro is None:
+            return
+        self._caps = db.listar_capitulos(self.libro["id"])
+        nuevo = db.obtener_libro(self.libro["id"])
+        if nuevo:
+            for k in ("modo_lectura", "modo_efectivo", "modo_motivo", "toc_leido", "caps_n", "caps_total",
+                      "caps_hechos", "estado", "avance"):
+                self.libro[k] = nuevo[k]
+            if self.var_estado.get() != nuevo["estado"]:
+                self.var_estado.set(nuevo["estado"])
+        self._refrescar_panel()
+
+    def cambiar_modo(self, modo: str):
+        if self.libro is not None:
+            db.fijar_modo_lectura(self.libro["id"], modo)
+            self.recargar_capitulos()
+
+    def marcar_hecho(self, cap_id: int, valor: bool):
+        db.marcar_capitulos(self.libro["id"], [cap_id], "hecho", valor)
+        self.recargar_capitulos()
+
+    def marcar_incluido(self, cap_id: int, valor: bool):
+        db.marcar_capitulos(self.libro["id"], [cap_id], "incluido", valor)
+        self.recargar_capitulos()
+
+    def marcar_todos_incluidos(self, valor: bool):
+        db.marcar_todos_incluidos(self.libro["id"], valor)
+        self.recargar_capitulos()
+
+    def _auto_capitulos(self, visible_previa: int):
+        """Al llegar (pasando página a página) al final de un capítulo, lo marca como hecho."""
+        if not self._caps or self.libro.get("modo_efectivo") != "capitulos":
+            return
+        vis = self._ultima_visible()
+        ids = [c["id"] for c in self._caps if c["incluido"] and not c["hecho"]
+               and c["pagina_ini"] <= visible_previa <= c["pagina_fin"] and vis >= c["pagina_fin"]]
+        if ids:
+            db.marcar_capitulos(self.libro["id"], ids, "hecho", True)
+            self.recargar_capitulos()
 
     # ================================================================== notas y subrayados
     def notas(self) -> list:

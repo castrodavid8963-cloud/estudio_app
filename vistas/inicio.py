@@ -66,6 +66,8 @@ class VistaInicio(ctk.CTkScrollableFrame):
         chip(marco, "CONTINUAR LEYENDO", C["acento"], C["fondo"]).grid(row=0, column=1, sticky="w", pady=(18, 0))
         titulo(marco, recortar(libro["titulo"], 70), 17).grid(row=1, column=1, sticky="w")
         pag = f"Página {libro['ultima_pagina']} de {libro['total_paginas']}" if libro["total_paginas"] else "Sin abrir el lector aún"
+        if libro["modo_efectivo"] == "capitulos" and libro["caps_total"]:
+            pag = f"{libro['caps_hechos']} de {libro['caps_total']} capítulos · {pag}"
         subtitulo(marco, f"{pag} · {int(libro['avance'] * 100)}% · {fecha_relativa(libro['ultima_apertura'])}").grid(
             row=2, column=1, sticky="w", pady=(0, 16))
         boton(marco, "Continuar  ›", lambda: self.app.abrir_libro(libro["id"]), width=130, height=38
@@ -147,7 +149,7 @@ class VistaInicio(ctk.CTkScrollableFrame):
         sig = r["siguiente"]
         txt = f"Siguiente: {recortar(sig['titulo'], 60)}" if sig else "¡Ruta completada!"
         subtitulo(marco, f"{r['completados']}/{r['total']} libros · {txt}").grid(row=2, column=1, sticky="w", pady=(0, 14))
-        barra(marco, r["progreso"], r["color"]).grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 14))
+        barra(marco, r["avance"], r["color"]).grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 14))
         boton(marco, "Abrir ruta", lambda: self.app.ir("rutas", objetivo=oid), "suave", width=110
               ).grid(row=0, column=2, rowspan=3, padx=18)
         if sig:

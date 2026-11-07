@@ -382,8 +382,10 @@ def _resumir(objetivo_id, meta, etapas) -> dict:
             siguiente = (en_curso or pendientes or [None])[0]
             break
 
+    todos = [l for e in etapas for l in e["libros"]]
+    avance = (sum(l["avance"] for l in todos) / len(todos)) if todos else 0.0
     return {
-        "id": objetivo_id, "nombre": meta["nombre"], "icono": meta["icono"], "color": meta["color"],
+        "id": objetivo_id, "nombre": meta["nombre"], "icono": meta["icono"], "color": meta["color"], "avance": avance,
         "descripcion": meta["descripcion"], "etapas": etapas, "total": total, "completados": completados,
         "progreso": (completados / total) if total else 0.0, "siguiente": siguiente,
         "etapa_actual": next((e["indice"] for e in etapas if e["estado"] == "actual"), None),
@@ -396,5 +398,5 @@ def resumen_objetivos(libros, ajustes_por_objetivo=None) -> list:
     salida = []
     for oid in OBJETIVOS:
         r = generar_roadmap(oid, libros, ajustes_por_objetivo.get(oid, ()))
-        salida.append({k: r[k] for k in ("id", "nombre", "icono", "color", "descripcion", "total", "completados", "progreso")})
+        salida.append({k: r[k] for k in ("id", "nombre", "icono", "color", "descripcion", "total", "completados", "progreso", "avance")})
     return salida

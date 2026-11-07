@@ -1,6 +1,7 @@
 """Herramientas: elegir/indexar la biblioteca, organizar y renombrar PDFs (gestor) y ajustes."""
 import os
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -12,6 +13,8 @@ import tiempo
 from library_scanner import escanear_e_indexar_biblioteca, EXCLUIDAS_POR_DEFECTO
 from ai_pdf import MODELO_POR_DEFECTO
 from vistas.duplicados import PestanaDuplicados
+import capitulos as cap
+from pdf_core import fitz, PYMUPDF_LOCK
 from tema import C, fuente, tarjeta, titulo, subtitulo, boton, barra, chip, recortar, nombre_area
 
 MODOS = ["Organizar", "Renombrar", "Ambas", "Reporte", "Deshacer"]
@@ -30,6 +33,8 @@ class VistaHerramientas(ctk.CTkFrame):
         super().__init__(padre, fg_color="transparent")
         self.app = app
         self._indexando = False
+        self._leyendo_indices = False
+        self._cancelar_indices = threading.Event()
         self.ultimo_resultado = None
         self._trabajando = False
         self._plan = None
@@ -91,15 +96,30 @@ class VistaHerramientas(ctk.CTkFrame):
         self.lbl_idx = subtitulo(t, "", 12)
         self.lbl_idx.grid(row=4, column=0, sticky="w", padx=18, pady=(4, 14))
 
+        self.tarjeta_caps = tarjeta(tab)
+        self.tarjeta_caps.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.tarjeta_caps.columnconfigure(0, weight=1)
+        titulo(self.tarjeta_caps, "Capítulos de los libros", 15).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 0))
+        subtitulo(self.tarjeta_caps, "Lee el índice interno de cada PDF para poder medir el avance por capítulos y sugerir qué libros "
+                                     "leer completos. Se hace una sola vez, en segundo plano, con pausas para no saturar el disco.",
+                  12, wraplength=700, text_color=C["texto3"]).grid(row=1, column=0, sticky="w", padx=18, pady=(2, 6))
+        fila_c = ctk.CTkFrame(self.tarjeta_caps, fg_color="transparent")
+        fila_c.grid(row=2, column=0, sticky="w", padx=14, pady=(0, 4))
+        self.btn_indices = boton(fila_c, "📑  Leer índices", self.leer_indices)
+        self.btn_indices.pack(side="left", padx=4)
+        self.btn_parar_indices = boton(fila_c, "Detener", self._cancelar_indices.set, "suave", width=80)
+        self.lbl_indices = subtitulo(self.tarjeta_caps, "", 12)
+        self.lbl_indices.grid(row=3, column=0, sticky="w", padx=18, pady=(2, 14))
+
         self.tarjeta_resumen = tarjeta(tab)
-        self.tarjeta_resumen.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.tarjeta_resumen.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
         titulo(self.tarjeta_resumen, "Qué hay indexado", 15).pack(anchor="w", padx=18, pady=(16, 6))
         self.lbl_resumen = subtitulo(self.tarjeta_resumen, "", 13)
         self.lbl_resumen.pack(anchor="w", padx=18, pady=(0, 16))
         nota = subtitulo(tab, "Indexar no mueve ni borra archivos: solo registra los PDF, genera portadas y detecta los que "
                               "cambiaron de lugar. Lo que deja de existir se marca como no disponible (se conserva tu progreso).",
                          12, wraplength=700, text_color=C["texto3"])
-        nota.grid(row=2, column=0, sticky="w", padx=14)
+        nota.grid(row=3, column=0, sticky="w", padx=14)
 
     def _refrescar_resumen(self):
         raiz = self._raiz()
@@ -115,6 +135,54 @@ class VistaHerramientas(ctk.CTkFrame):
         self.lbl_resumen.configure(
             text=f"{len(todos)} libros disponibles · {len(todos) - excl} en rutas y tutor IA · {excl} en áreas excluidas"
                  + (f" · {no_disp} no disponibles (archivo movido o disco desconectado)" if no_disp else ""))
+
+    def leer_indices(self):
+        if self._leyendo_indices:
+            return
+        pendientes = db.libros_sin_indice()
+        if not pendientes:
+            self.lbl_indices.configure(text="✓ Todos los índices ya estaban leídos.", text_color=C["ok"])
+            return
+        self._leyendo_indices = True
+        self._cancelar_indices.clear()
+        self.btn_indices.configure(state="disabled")
+        self.btn_parar_indices.pack(side="left", padx=4)
+        total = len(pendientes)
+
+        def trabajo():
+            hechos = con_indice = 0
+            for rid, ruta in pendientes:
+                if self._cancelar_indices.is_set():
+                    break
+                caps = None
+                try:
+                    if os.path.exists(ruta):
+                        with PYMUPDF_LOCK:
+                            doc = fitz.open(ruta)
+                            try:
+                                caps = cap.extraer_capitulos(doc.get_toc(simple=True), len(doc))
+                            finally:
+                                doc.close()
+                except Exception:
+                    caps = []
+                if caps is not None:                 # si el archivo no existe se deja pendiente para otra vez
+                    db.guardar_capitulos(rid, caps)
+                    con_indice += 1 if caps else 0
+                hechos += 1
+                if hechos % 5 == 0 or hechos == total:
+                    self.app._en_ui(self.lbl_indices.configure, text=f"Leyendo índices… {hechos} de {total}", text_color=C["texto2"])
+                time.sleep(0.03)                     # respiro para los discos mecánicos
+            self.app._en_ui(self._indices_listos, hechos, total, con_indice)
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def _indices_listos(self, hechos, total, con_indice):
+        self._leyendo_indices = False
+        self.btn_indices.configure(state="normal")
+        self.btn_parar_indices.pack_forget()
+        parcial = hechos < total
+        self.lbl_indices.configure(
+            text=f"{'Detenido' if parcial else '✓ Listo'}: {hechos} de {total} revisados · {con_indice} con índice interno",
+            text_color=C["aviso"] if parcial else C["ok"])
 
     def indexar(self, al_terminar=None):
         raiz = self._raiz()

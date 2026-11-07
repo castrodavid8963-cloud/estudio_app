@@ -71,7 +71,7 @@ class VistaRutas(ctk.CTkFrame):
         activo = db.obtener_config("objetivo_activo")
         resumenes = roadmap.resumen_objetivos(self._libros, self._ajustes_todos())
         # La ruta fijada primero; luego por avance (las empezadas arriba)
-        resumenes.sort(key=lambda r: (r["id"] != activo, -(r["progreso"] > 0), -r["progreso"]))
+        resumenes.sort(key=lambda r: (r["id"] != activo, -(r["avance"] > 0), -r["avance"]))
         guardado = db.obtener_orden_rutas()
         if guardado:                                  # orden manual: gana sobre el automático
             pos = {oid: i for i, oid in enumerate(guardado)}
@@ -94,7 +94,7 @@ class VistaRutas(ctk.CTkFrame):
             self._etiquetas_nombre.append(nombre)
             ctk.CTkLabel(f, text=f"{r['completados']}/{r['total']} libros", font=fuente(11), text_color=C["texto2"],
                          anchor="w").grid(row=1, column=1, sticky="w", padx=8)
-            barra(f, r["progreso"], r["color"], alto=4).grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(2, 10))
+            barra(f, r["avance"], r["color"], alto=4).grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(2, 10))
             for w in [f] + f.winfo_children():
                 w.bind("<Button-1>", lambda e, oid=r["id"]: self._elegir(oid))
             # Botones de orden (se crean después del enlace de clic para que no seleccionen la ruta)
@@ -157,9 +157,9 @@ class VistaRutas(ctk.CTkFrame):
         ctk.CTkLabel(cab, text=r["icono"], font=fuente(38), width=70).grid(row=0, column=0, rowspan=3, padx=14, pady=14)
         titulo(cab, r["nombre"], 22).grid(row=0, column=1, sticky="w", pady=(16, 0))
         subtitulo(cab, r["descripcion"], 12).grid(row=1, column=1, sticky="w")
-        subtitulo(cab, f"{r['completados']} de {r['total']} libros completados · {int(r['progreso'] * 100)}%", 12
+        subtitulo(cab, f"{r['completados']} de {r['total']} libros completados · {int(r['avance'] * 100)}% de avance", 12
                   ).grid(row=2, column=1, sticky="w", pady=(0, 6))
-        barra(cab, r["progreso"], r["color"], alto=8).grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 16))
+        barra(cab, r["avance"], r["color"], alto=8).grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 16))
         botones = ctk.CTkFrame(cab, fg_color="transparent")
         botones.grid(row=0, column=2, rowspan=3, padx=16)
         boton(botones, "📌 Mi ruta" if activo else "Fijar como mi ruta", self._fijar, "suave" if activo else "primario",
@@ -200,7 +200,7 @@ class VistaRutas(ctk.CTkFrame):
         info = e["descripcion"] + (f"  ·  {e['completados']}/{e['total']}" if e["total"] else "")
         subtitulo(t, info, 12).grid(row=1, column=1, sticky="w", pady=(0, 6))
         if e["total"]:
-            barra(t, e["progreso"], color, alto=5).grid(row=2, column=1, sticky="ew", padx=(0, 16), pady=(0, 6))
+            barra(t, e["avance_libros"], color, alto=5).grid(row=2, column=1, sticky="ew", padx=(0, 16), pady=(0, 6))
         fila_i = 3
         for libro in e["libros"]:
             self._fila_libro(t, fila_i, libro, e, opcional=False)
@@ -244,14 +244,41 @@ class VistaRutas(ctk.CTkFrame):
                               font=fuente(13), text_color=C["texto3"] if hecho else C["texto"])
         nombre.grid(row=0, column=1, sticky="w", padx=6, pady=6)
         nombre.bind("<Button-1>", lambda e, l=libro: self.app.abrir_libro(l["id"]))
-        chip(f, libro.get("nivel_nombre", ""), NIVEL_COLOR.get(libro.get("nivel", 2), C["texto2"])).grid(row=0, column=2, padx=4)
+        if libro["modo_efectivo"] == "capitulos" and libro["caps_total"]:
+            chip(f, f"§ {libro['caps_hechos']}/{libro['caps_total']}", C["acento"]).grid(row=0, column=2, padx=2)
+        elif libro["modo_lectura"] == "completo":
+            chip(f, "📖 completo", C["texto2"]).grid(row=0, column=2, padx=2)
+        chip(f, libro.get("nivel_nombre", ""), NIVEL_COLOR.get(libro.get("nivel", 2), C["texto2"])).grid(row=0, column=3, padx=4)
         if libro.get("manual"):
-            chip(f, "manual", C["aviso"]).grid(row=0, column=3, padx=2)
+            chip(f, "manual", C["aviso"]).grid(row=0, column=4, padx=2)
+        boton(f, "⋯", lambda l=libro, w=f: self._menu_modo(l, w), "fantasma", width=28, height=26).grid(row=0, column=5, padx=(2, 0))
         if opcional:
             boton(f, "＋", lambda l=libro, i=etapa["indice"]: self._agregar(l["id"], i), "fantasma", width=28, height=26
-                  ).grid(row=0, column=4, padx=(2, 6))
+                  ).grid(row=0, column=6, padx=(2, 6))
         else:
-            boton(f, "✕", lambda l=libro: self._quitar(l), "fantasma", width=28, height=26).grid(row=0, column=4, padx=(2, 6))
+            boton(f, "✕", lambda l=libro: self._quitar(l), "fantasma", width=28, height=26).grid(row=0, column=6, padx=(2, 6))
+
+    # ------------------------------------------------------------------ modo de lectura
+    def _menu_modo(self, libro, widget):
+        """Menú del libro: cómo se mide su avance (completo o por capítulos)."""
+        m = tk.Menu(self, tearoff=0, bg=C["tarjeta"], fg=C["texto"], activebackground=C["acento"], bd=0)
+        efectivo = "por capítulos" if libro["modo_efectivo"] == "capitulos" else "completo"
+        m.add_command(label=f"Se mide {efectivo}: {libro['modo_motivo']}", state="disabled")
+        m.add_separator()
+        for modo, etiqueta in (("auto", "Automático (la app decide)"), ("completo", "Leer completo (repasar de principio a fin)"),
+                               ("capitulos", "Medir por capítulos")):
+            marca = "✓ " if libro["modo_lectura"] == modo else "    "
+            m.add_command(label=marca + etiqueta, command=lambda md=modo, l=libro: self._fijar_modo(l, md))
+        m.add_separator()
+        m.add_command(label="Abrir y elegir capítulos…", command=lambda l=libro: self.app.abrir_libro(l["id"], panel="capitulos"))
+        try:
+            m.tk_popup(widget.winfo_rootx() + widget.winfo_width() - 40, widget.winfo_rooty() + widget.winfo_height())
+        finally:
+            m.grab_release()
+
+    def _fijar_modo(self, libro, modo):
+        db.fijar_modo_lectura(libro["id"], modo)
+        self._refrescar()
 
     # ------------------------------------------------------------------ acciones
     def _refrescar(self):
