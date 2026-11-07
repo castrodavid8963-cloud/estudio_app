@@ -1,3 +1,5 @@
+from __future__ import annotations
+from datetime import datetime
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -144,6 +146,23 @@ def inicializar_db():
                 accion TEXT NOT NULL,
                 etapa INTEGER,
                 PRIMARY KEY (objetivo, recurso_id)
+            )
+        """)
+
+        # ---------------- Notas y subrayados ----------------
+        # tipo: 'nota' | 'subrayado' | 'sesion' (nota rápida al cerrar el lector).
+        # rect: "x0,y0,x1,y1" normalizado (0-1) respecto a la página; solo en subrayados.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recurso_id INTEGER NOT NULL,
+                pagina INTEGER NOT NULL DEFAULT 1,
+                tipo TEXT NOT NULL DEFAULT 'nota',
+                texto TEXT DEFAULT '',
+                rect TEXT,
+                color TEXT DEFAULT 'amarillo',
+                creado TEXT,
+                actualizado TEXT
             )
         """)
 
@@ -511,6 +530,10 @@ def fusionar_progreso(origen_id: int, destino_id: int):
         conn.execute("UPDATE sesiones_estudio SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         conn.execute("UPDATE OR IGNORE roadmap_ajustes SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         conn.execute("DELETE FROM roadmap_ajustes WHERE recurso_id = ?", (origen_id,))
+        if (o[3] or 0) == total:           # mismas páginas: las notas siguen siendo válidas
+            conn.execute("UPDATE notas SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
+        else:
+            conn.execute("DELETE FROM notas WHERE recurso_id = ?", (origen_id,))
 
 
 def marcar_no_disponible(recurso_id: int):
@@ -539,3 +562,99 @@ def mover_ruta(orden_actual: list, objetivo: str, delta: int) -> list:
     orden[i], orden[j] = orden[j], orden[i]
     guardar_orden_rutas(orden)
     return orden
+
+
+# ============================================================================ notas y subrayados
+COLORES_SUBRAYADO = {"amarillo": (255, 214, 10), "verde": (52, 211, 153), "rosa": (244, 114, 182), "azul": (96, 165, 250)}
+
+
+def _ahora() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _rect_a_texto(rect) -> str | None:
+    return None if not rect else ",".join(f"{float(v):.5f}" for v in rect)
+
+
+def _rect_de_texto(texto) -> tuple | None:
+    try:
+        v = tuple(float(x) for x in (texto or "").split(","))
+        return v if len(v) == 4 else None
+    except ValueError:
+        return None
+
+
+def agregar_nota(recurso_id: int, pagina: int, texto: str = "", tipo: str = "nota", rect=None,
+                 color: str = "amarillo") -> int:
+    with obtener_conexion() as conn:
+        cur = conn.execute(
+            "INSERT INTO notas (recurso_id, pagina, tipo, texto, rect, color, creado, actualizado) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (recurso_id, int(pagina), tipo, texto or "", _rect_a_texto(rect), color, _ahora(), _ahora()))
+        return cur.lastrowid
+
+
+def listar_notas(recurso_id: int) -> list:
+    """Notas de un libro ordenadas por página y luego por creación."""
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        filas = conn.execute("SELECT * FROM notas WHERE recurso_id = ? ORDER BY pagina, id", (recurso_id,)).fetchall()
+    notas = []
+    for f in filas:
+        n = dict(f)
+        n["rect"] = _rect_de_texto(n.get("rect"))
+        notas.append(n)
+    return notas
+
+
+def actualizar_nota(nota_id: int, texto: str):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE notas SET texto = ?, actualizado = ? WHERE id = ?", (texto, _ahora(), nota_id))
+
+
+def borrar_nota(nota_id: int):
+    with obtener_conexion() as conn:
+        conn.execute("DELETE FROM notas WHERE id = ?", (nota_id,))
+
+
+def contar_notas(recurso_id: int | None = None) -> int:
+    with obtener_conexion() as conn:
+        if recurso_id is None:
+            return conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM notas WHERE recurso_id = ?", (recurso_id,)).fetchone()[0]
+
+
+def exportar_notas_markdown(recurso_id: int | None = None) -> str:
+    """Markdown con las notas de un libro, o de toda la biblioteca si no se indica."""
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        if recurso_id is None:
+            libros = conn.execute("SELECT DISTINCT r.id, r.nombre_archivo AS titulo FROM recursos r JOIN notas n ON n.recurso_id = r.id "
+                                  "ORDER BY r.nombre_archivo COLLATE NOCASE").fetchall()
+        else:
+            libros = conn.execute("SELECT id, nombre_archivo AS titulo FROM recursos WHERE id = ?", (recurso_id,)).fetchall()
+    lineas = ["# Mis notas de estudio", "", f"_Exportado el {datetime.now():%Y-%m-%d %H:%M}_", ""]
+    hay = False
+    for lib in libros:
+        notas = listar_notas(lib["id"])
+        if not notas:
+            continue
+        hay = True
+        nombre = lib["titulo"][:-4] if lib["titulo"].lower().endswith(".pdf") else lib["titulo"]
+        lineas += [f"## {nombre}", ""]
+        pagina_previa = None
+        for n in notas:
+            if n["pagina"] != pagina_previa:
+                lineas += [f"### Página {n['pagina']}", ""]
+                pagina_previa = n["pagina"]
+            texto = (n["texto"] or "").strip()
+            if n["tipo"] == "subrayado":
+                cita = "\n> ".join(texto.splitlines()) if texto else "_(zona subrayada sin texto)_"
+                lineas += [f"> {cita}", ""]
+            elif n["tipo"] == "sesion":
+                lineas += [f"- **Al cerrar la sesión ({(n['creado'] or '')[:10]}):** {texto}", ""]
+            else:
+                lineas += [f"- {texto}", ""]
+    if not hay:
+        lineas.append("_Todavía no hay notas._")
+    return "\n".join(lineas).rstrip() + "\n"

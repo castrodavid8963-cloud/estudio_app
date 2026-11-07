@@ -77,7 +77,7 @@ class AppEstudio(ctk.CTk):
         for i, (clave, _, _) in enumerate(NAVEGACION, start=1):
             self.bind(f"<Control-Key-{i}>", lambda e, c=clave: self.ir(c) if not self.lector_visible else None)
         self.bind("<Configure>", self._al_cambiar_tamano)
-        self.bind_all("<Control-t>", lambda e: self.lector.alternar_tutor() if self.lector_visible else None)
+        self.bind_all("<Control-t>", lambda e: self.lector.alternar_panel() if self.lector_visible else None)
         self.bind_all("<Key>", lambda e: self._actividad_global())
         self.bind_all("<Motion>", lambda e: self._actividad_global())
 
@@ -238,6 +238,14 @@ class AppEstudio(ctk.CTk):
         self.lector.grid()
         self.lector.abrir(libro)
         self.lector.focus_set()
+
+    def volver_del_lector(self):
+        """Botón «Volver»: si la sesión fue de más de 2 minutos, ofrece dejar una nota rápida."""
+        l = self.lector
+        if l.libro is not None and db.obtener_config("nota_al_cerrar", "1") == "1" and self.rastreador.segundos_sesion >= 120:
+            l.pedir_nota_sesion(self.cerrar_lector)
+        else:
+            self.cerrar_lector()
 
     def cerrar_lector(self, volver=True):
         self.lector.cerrar()
