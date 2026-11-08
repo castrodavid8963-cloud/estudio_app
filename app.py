@@ -12,6 +12,7 @@ from library_scanner import detectar_cambios_rapido
 from services import asegurar_ollama_activo
 from tema import C, fuente, configurar, barra
 from vistas.biblioteca import VistaBiblioteca
+from vistas.buscar import VistaBuscar
 from vistas.herramientas import VistaHerramientas
 from vistas.inicio import VistaInicio
 from vistas.lector import VistaLector
@@ -25,6 +26,7 @@ NAVEGACION = [
     ("inicio", "🏠", "Inicio"),
     ("biblioteca", "📚", "Biblioteca"),
     ("rutas", "🧭", "Rutas"),
+    ("buscar", "🔎", "Buscar"),
     ("herramientas", "🛠", "Herramientas"),
 ]
 
@@ -65,6 +67,7 @@ class AppEstudio(ctk.CTk):
             "inicio": VistaInicio(self.contenedor, self),
             "biblioteca": VistaBiblioteca(self.contenedor, self),
             "rutas": VistaRutas(self.contenedor, self),
+            "buscar": VistaBuscar(self.contenedor, self),
             "herramientas": VistaHerramientas(self.contenedor, self),
         }
         for v in self.vistas.values():
@@ -77,6 +80,7 @@ class AppEstudio(ctk.CTk):
         for i, (clave, _, _) in enumerate(NAVEGACION, start=1):
             self.bind(f"<Control-Key-{i}>", lambda e, c=clave: self.ir(c) if not self.lector_visible else None)
         self.bind("<Configure>", self._al_cambiar_tamano)
+        self.bind_all("<Control-k>", lambda e: self.ir("buscar") if not self.lector_visible else None)
         self.bind_all("<Control-t>", lambda e: self.lector.alternar_panel() if self.lector_visible else None)
         self.bind_all("<Key>", lambda e: self._actividad_global())
         self.bind_all("<Motion>", lambda e: self._actividad_global())
@@ -226,10 +230,12 @@ class AppEstudio(ctk.CTk):
                         text_color=C["texto"] if activo else C["texto2"])
         self._refrescar_pie()
 
-    def abrir_libro(self, recurso_id: int, panel: str = None):
+    def abrir_libro(self, recurso_id: int, panel: str = None, pagina: int = None):
         libro = db.obtener_libro(recurso_id)
         if not libro:
             return
+        if pagina:
+            libro["ultima_pagina"] = pagina
         if self._vista_actual:
             self._vista_previa = self._vista_actual
             self.vistas[self._vista_actual].grid_remove()
@@ -335,6 +341,7 @@ class AppEstudio(ctk.CTk):
 
     def al_cerrar(self):
         try:
+            self.vistas["buscar"].indexador.detener()
             if self.lector_visible:
                 self.lector.cerrar()
             self.rastreador.cerrar()
