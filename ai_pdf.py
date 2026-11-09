@@ -7,6 +7,7 @@ from collections import Counter
 import ollama
 
 from pdf_core import fitz, PYMUPDF_LOCK
+from tutor import SOCRATICO
 
 # ----------------------------------------------------------------- configuración
 # Se pueden cambiar sin tocar código:  ESTUDIO_MODELO=llama3.2:3b  ESTUDIO_NUM_CTX=4096
@@ -87,6 +88,27 @@ def _partir_texto(texto: str, max_chars: int) -> list:
     return trozos
 
 
+# ----------------------------------------------------------------- modelo
+def modelo_actual() -> str:
+    """Modelo elegido por el usuario (Ajustes del tutor) o, si no hay, el de ESTUDIO_MODELO / por defecto."""
+    try:
+        import database as db
+        return db.obtener_config("modelo_tutor", "") or MODELO_POR_DEFECTO
+    except Exception:
+        return MODELO_POR_DEFECTO
+
+
+def modelos_instalados() -> list:
+    """Nombres de los modelos de chat instalados en Ollama (sin los de embeddings). [] si no se puede consultar."""
+    try:
+        r = _cliente.list()
+        modelos = r["models"] if isinstance(r, dict) else getattr(r, "models", [])
+        nombres = [(m.get("model") if isinstance(m, dict) else getattr(m, "model", None)) for m in modelos]
+    except Exception:
+        return []
+    return sorted(n for n in nombres if n and "embed" not in n.lower())
+
+
 # ----------------------------------------------------------------- búsqueda (BM25 simple)
 _STOPWORDS = {
     "que", "los", "las", "del", "con", "una", "uno", "por", "para", "como", "mas", "pero", "sus",
@@ -101,9 +123,18 @@ def _tokens(texto: str) -> list:
     texto = unicodedata.normalize("NFD", texto.lower())
     texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
     return [
-        p[:6] for p in re.findall(r"[a-z0-9]{3,}", texto)
+        _raiz(p) for p in re.findall(r"[a-z0-9]{3,}", texto)
         if p not in _STOPWORDS
     ]
+
+
+def _raiz(p: str) -> str:
+    """Raíz aproximada: sin plural (-es/-s) y a 6 caracteres, así «árboles» y «árbol» coinciden."""
+    if len(p) > 5 and p.endswith("es"):
+        p = p[:-2]
+    elif len(p) > 3 and p.endswith("s"):
+        p = p[:-1]
+    return p[:6]
 
 
 class IndiceLibro:
@@ -137,18 +168,26 @@ class IndiceLibro:
                 total += self._idf.get(t, 0.0) * (f * (self.K1 + 1)) / (f + norm)
         return total
 
-    def contexto_para(self, pregunta: str, max_chars: int = MAX_CHARS_CONTEXTO) -> str:
-        """Devuelve los fragmentos más relevantes a `pregunta`, en orden de lectura y con su página.
+    def contexto_para(self, pregunta: str, max_chars: int = MAX_CHARS_CONTEXTO, pagina_actual: int = None) -> str:
+        return self.recuperar(pregunta, max_chars, pagina_actual)[0]
+
+    def recuperar(self, pregunta: str, max_chars: int = MAX_CHARS_CONTEXTO, pagina_actual: int = None):
+        """(contexto, [páginas usadas]). Igual que contexto_para pero también dice de qué páginas salió el texto.
+        Si se da `pagina_actual`, los fragmentos cercanos a ella pesan un poco más (el estudiante pregunta de lo que lee).
+        Devuelve los fragmentos más relevantes a `pregunta`, en orden de lectura y con su página.
 
         Si la pregunta no comparte términos con el libro (p. ej. "haz un resumen"), se muestrea el
         libro de forma uniforme para dar una visión general.
         """
         if not self.fragmentos:
-            return ""
+            return "", []
 
         terminos = set(_tokens(pregunta))
         puntajes = [(self._puntaje(i, terminos), i) for i in range(len(self.fragmentos))] if terminos else []
         puntajes = [p for p in puntajes if p[0] > 0]
+        if pagina_actual:
+            puntajes = [(p * (1.25 if abs(self.fragmentos[i]["pagina"] - pagina_actual) <= 3 else 1.0), i)
+                        for p, i in puntajes]
         puntajes.sort(reverse=True)
 
         elegidos, usados = [], 0
@@ -168,11 +207,12 @@ class IndiceLibro:
             paso = len(self.fragmentos) / cuantos
             elegidos = sorted({int(k * paso) for k in range(cuantos)})
 
-        partes = []
+        partes, paginas = [], []
         for i in sorted(elegidos):
             f = self.fragmentos[i]
             partes.append(f"[Página {f['pagina']}]\n{f['texto']}")
-        return "\n\n".join(partes)[:max_chars + 200]
+            paginas.append(f["pagina"])
+        return "\n\n".join(partes)[:max_chars + 200], paginas
 
 
 # ----------------------------------------------------------------- chat
@@ -195,12 +235,13 @@ def consultar_ollama_con_contexto(
     nombre_pdf: str = "",
     historial=None,
     modelo: str = None,
+    socratico: bool = False,
 ) -> str:
     """Consulta a Ollama con el libro activo, el historial reciente y la pregunta.
 
     Lanza `ErrorOllama` si algo falla (así el error nunca se confunde con una respuesta de la IA).
     """
-    modelo = modelo or MODELO_POR_DEFECTO
+    modelo = modelo or modelo_actual()
     hay_libro = bool(nombre_pdf) and nombre_pdf != "Ninguno"
 
     if hay_libro:
@@ -225,6 +266,8 @@ def consultar_ollama_con_contexto(
             "Responde en español, de forma clara, estructurada y concisa."
         )
 
+    if socratico:
+        sistema += "\n\n" + SOCRATICO
     mensajes = [{"role": "system", "content": sistema}]
     mensajes += historial_a_mensajes(historial)
     mensajes.append({"role": "user", "content": pregunta})
@@ -253,7 +296,7 @@ _SISTEMA_ESTUDIO = (
 
 
 def _generar_json(instruccion: str, texto: str, nombre_pdf: str, modelo: str = None) -> str:
-    modelo = modelo or MODELO_POR_DEFECTO
+    modelo = modelo or modelo_actual()
     if len((texto or "").strip()) < 200:
         raise ErrorOllama("Ese fragmento casi no tiene texto (¿es una página escaneada o de imágenes?).")
     mensajes = [

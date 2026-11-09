@@ -9,7 +9,9 @@ from tkinter import filedialog
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
+import ai_pdf
 import capitulos as cap
+import tutor as tt
 import database as db
 import tiempo
 from ai_pdf import extraer_fragmentos_pdf, IndiceLibro, consultar_ollama_con_contexto, ErrorOllama
@@ -168,8 +170,15 @@ class VistaLector(ctk.CTkFrame):
         titulo(cab, "Tutor IA", 16).pack(side="left")
         self.lbl_ia = ctk.CTkLabel(cab, text="", font=fuente(11), text_color=C["texto3"])
         self.lbl_ia.pack(side="right")
-        self.lbl_contexto = subtitulo(self.tutor, "", 11)
-        self.lbl_contexto.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+        fila_ctx = ctk.CTkFrame(self.tutor, fg_color="transparent")
+        fila_ctx.grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 6))
+        self.menu_modelo = ctk.CTkOptionMenu(fila_ctx, values=[ai_pdf.modelo_actual()], width=140, height=22,
+                                             font=fuente(10), dropdown_font=fuente(11), fg_color=C["tarjeta"],
+                                             button_color=C["tarjeta_hover"], text_color=C["texto2"],
+                                             command=self._elegir_modelo)
+        self.lbl_contexto = subtitulo(fila_ctx, "", 11)
+        self.lbl_contexto.configure(anchor="w", justify="left")
+        self.lbl_contexto.pack(side="left", fill="x", expand=True)
 
         self.chat = tk.Text(self.tutor, wrap="word", bg=C["lateral"], fg=C["texto"], bd=0, highlightthickness=0,
                             padx=14, pady=6, font=("TkDefaultFont", 10), state="disabled", cursor="arrow",
@@ -184,22 +193,31 @@ class VistaLector(ctk.CTkFrame):
         self.chat.tag_configure("u", foreground=C["texto"], lmargin1=8, lmargin2=8, background=C["acento_suave"])
         self.chat.tag_configure("ia", foreground=C["texto"], lmargin1=8, lmargin2=8)
         self.chat.tag_configure("s", foreground=C["texto2"], lmargin1=8, lmargin2=8, font=("TkDefaultFont", 10, "italic"))
+        self.chat.tag_configure("fuentes", foreground=C["texto3"], lmargin1=8, lmargin2=8, font=("TkDefaultFont", 9))
         self.chat.tag_configure("e", foreground=C["error"], lmargin1=8, lmargin2=8)
 
         fila_acc = ctk.CTkFrame(self.tutor, fg_color="transparent")
         fila_acc.grid(row=3, column=0, columnspan=2, sticky="ew", padx=12, pady=(6, 0))
         self.botones_acc = []
+        fila_uno = ctk.CTkFrame(fila_acc, fg_color="transparent")
+        fila_uno.pack(fill="x", side="top")
         for texto, prompt in ACCIONES_RAPIDAS:
-            b = boton(fila_acc, texto, lambda p=prompt: self._accion_rapida(p), "suave", height=28, font=fuente(11))
+            b = boton(fila_uno, texto, lambda p=prompt: self._accion_rapida(p), "suave", height=28, font=fuente(11))
             b.pack(side="left", padx=2, expand=True, fill="x")
             self.botones_acc.append(b)
         fila_rep = ctk.CTkFrame(fila_acc, fg_color="transparent")
-        fila_rep.pack(fill="x", side="bottom")
-        self.btn_tarjetas = boton(fila_rep, "🃏 Crear tarjetas", self.crear_tarjetas, "suave", height=28, font=fuente(11))
-        self.btn_tarjetas.pack(side="left", padx=2, pady=(4, 0), expand=True, fill="x")
-        self.btn_quiz_rep = boton(fila_rep, "✅ Quiz guardado", self.hacer_quiz, "suave", height=28, font=fuente(11))
-        self.btn_quiz_rep.pack(side="left", padx=2, pady=(4, 0), expand=True, fill="x")
+        fila_rep.pack(fill="x", side="top")
+        for c in range(3):
+            fila_rep.columnconfigure(c, weight=1, uniform="rep")
+        fila_uno.pack_configure()
+        self.btn_tarjetas = boton(fila_rep, "🃏 Tarjetas", self.crear_tarjetas, "suave", height=28, font=fuente(11))
+        self.btn_tarjetas.grid(row=0, column=0, padx=2, pady=(4, 0), sticky="ew")
+        self.btn_quiz_rep = boton(fila_rep, "📝 Test", self.hacer_quiz, "suave", height=28, font=fuente(11))
+        self.btn_quiz_rep.grid(row=0, column=1, padx=2, pady=(4, 0), sticky="ew")
         self.botones_acc += [self.btn_tarjetas, self.btn_quiz_rep]
+        self.btn_socratico = boton(fila_rep, "🎓 Socr.", self.alternar_socratico, "suave", height=28, font=fuente(11))
+        self.btn_socratico.grid(row=0, column=2, padx=2, pady=(4, 0), sticky="ew")
+        self._pintar_socratico()
 
         entrada = ctk.CTkFrame(self.tutor, fg_color="transparent")
         entrada.grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=10)
@@ -895,12 +913,75 @@ class VistaLector(ctk.CTkFrame):
     def alternar_tutor(self):
         self.mostrar_panel("tutor")
 
-    def _escribir(self, quien, texto, tag_quien, tag_texto):
+    def _escribir(self, quien, texto, tag_quien, tag_texto, fuentes=None):
         self.chat.configure(state="normal")
         self.chat.insert("end", f"{quien}\n", tag_quien)
-        self.chat.insert("end", f"{texto}\n", tag_texto)
+        if tag_texto == "ia":
+            total = (self.libro or {}).get("total_paginas") or 0
+            for trozo, pag in tt.partir_con_citas(texto, total):
+                if pag:
+                    self.chat.insert("end", trozo, ("ia", self._tag_cita(pag)))
+                else:
+                    self.chat.insert("end", trozo, "ia")
+            self.chat.insert("end", "\n", "ia")
+            if fuentes:
+                self.chat.insert("end", "Fuentes: ", "fuentes")
+                for k, p in enumerate(sorted({int(x) for x in fuentes})[:8]):
+                    self.chat.insert("end", ", " if k else "", "fuentes")
+                    self.chat.insert("end", f"p. {p}", ("fuentes", self._tag_cita(p)))
+                self.chat.insert("end", "\n", "fuentes")
+        else:
+            self.chat.insert("end", f"{texto}\n", tag_texto)
         self.chat.configure(state="disabled")
         self.chat.see("end")
+
+    def _tag_cita(self, pagina: int) -> str:
+        """Etiqueta clicable que lleva el lector a `pagina`."""
+        nombre = f"cita_{pagina}"
+        if nombre not in self.chat.tag_names():
+            self.chat.tag_configure(nombre, foreground=C["acento"], underline=True)
+            self.chat.tag_bind(nombre, "<Button-1>", lambda e, p=pagina: self.ir_a(p))
+            self.chat.tag_bind(nombre, "<Enter>", lambda e: self.chat.configure(cursor="hand2"))
+            self.chat.tag_bind(nombre, "<Leave>", lambda e: self.chat.configure(cursor="arrow"))
+        return nombre
+
+    # ------------------------------------------------------------------ ajustes del tutor
+    def socratico_activo(self) -> bool:
+        return db.obtener_config("tutor_socratico", "0") == "1"
+
+    def alternar_socratico(self):
+        db.guardar_config("tutor_socratico", "0" if self.socratico_activo() else "1")
+        self._pintar_socratico()
+        self.lbl_contexto.configure(text="Modo socrático: te haré preguntas guía." if self.socratico_activo()
+                                    else "Modo normal: respondo directamente.")
+
+    def _pintar_socratico(self):
+        on = self.socratico_activo()
+        self.btn_socratico.configure(fg_color=C["acento"] if on else C["tarjeta_hover"],
+                                     text_color=C["texto"], text="🎓 Socr. ✓" if on else "🎓 Socr.")
+
+    def _elegir_modelo(self, nombre):
+        db.guardar_config("modelo_tutor", nombre)
+        self.lbl_contexto.configure(text=f"Modelo del tutor: {nombre}")
+
+    def refrescar_modelos(self):
+        """Muestra el selector solo si hay más de un modelo de chat instalado en Ollama."""
+        def trabajo():
+            modelos = ai_pdf.modelos_instalados()
+            self.app._en_ui(self._pintar_modelos, modelos)
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def _pintar_modelos(self, modelos):
+        try:
+            actual = ai_pdf.modelo_actual()
+            if len(modelos) > 1:
+                self.menu_modelo.configure(values=modelos)
+                self.menu_modelo.set(actual if actual in modelos else modelos[0])
+                self.menu_modelo.pack(side="right")
+            else:
+                self.menu_modelo.pack_forget()
+        except tk.TclError:
+            pass
 
     def _limpiar_chat(self):
         self.chat.configure(state="normal")
@@ -964,6 +1045,8 @@ class VistaLector(ctk.CTkFrame):
     def actualizar_estado_ia(self):
         if self.libro is not None:
             self._actualizar_etiqueta_ia()
+            if self.app.ollama_listo:
+                self.refrescar_modelos()
 
     def _texto_pagina(self, n):
         try:
@@ -1037,11 +1120,13 @@ class VistaLector(ctk.CTkFrame):
         self._actividad(forzar=True)
         rid, nombre, pagina = self.libro["id"], self.libro["titulo"], self._pagina
         historial_previo = list(self._historial)
+        fuentes = []
         if solo_pagina:
             texto = self._texto_pagina(pagina)
             contexto = f"[Página {pagina}]\n{texto[:6500]}" if texto else ""
+            fuentes = [pagina] if texto else []
         else:
-            contexto = self._indice.contexto_para(pregunta) if self._indice else ""
+            contexto, fuentes = self._indice.recuperar(pregunta, pagina_actual=pagina) if self._indice else ("", [])
             pregunta_modelo = f"(Estoy leyendo la página {pagina}.) {pregunta}"
         pregunta_modelo = pregunta if solo_pagina else pregunta_modelo
 
@@ -1051,19 +1136,20 @@ class VistaLector(ctk.CTkFrame):
         self._habilitar_entrada(False)
         self.lbl_contexto.configure(text="⏳ El tutor está pensando…")
         gen = self._gen
+        socratico = self.socratico_activo()
 
         def trabajo():
             try:
                 r = consultar_ollama_con_contexto(pregunta_modelo, contexto_pdf=contexto, nombre_pdf=nombre,
-                                                  historial=historial_previo)
-                self.app._en_ui(self._respuesta, gen, rid, r, None)
+                                                  historial=historial_previo, socratico=socratico)
+                self.app._en_ui(self._respuesta, gen, rid, r, None, fuentes)
             except ErrorOllama as e:
                 self.app._en_ui(self._respuesta, gen, rid, None, str(e))
             except Exception as e:
                 self.app._en_ui(self._respuesta, gen, rid, None, f"Error inesperado: {e}")
         threading.Thread(target=trabajo, daemon=True).start()
 
-    def _respuesta(self, gen, rid, respuesta, error):
+    def _respuesta(self, gen, rid, respuesta, error, fuentes=None):
         if error:
             # Los errores no se guardan como si fueran respuestas del tutor.
             if gen == self._gen:
@@ -1073,7 +1159,7 @@ class VistaLector(ctk.CTkFrame):
         else:
             if gen == self._gen:
                 self._historial.append({"emisor": "IA", "texto": respuesta})
-                self._escribir("TUTOR", respuesta, "quien_ia", "ia")
+                self._escribir("TUTOR", respuesta, "quien_ia", "ia", fuentes=fuentes)
                 db.guardar_historial_chat(rid, self._historial[-MAX_HISTORIAL_GUARDADO:])
             else:      # el usuario cambió de libro: se guarda en el suyo
                 h = db.cargar_historial_chat(rid)
