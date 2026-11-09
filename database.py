@@ -1,9 +1,11 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import date, datetime, timedelta
+import json
 import os
 import sqlite3
 
 import capitulos as cap
+import repaso as rp
 from contextlib import contextmanager
 
 # La BD vive junto al código, sin importar desde dónde se lance la app.
@@ -170,6 +172,60 @@ def inicializar_db():
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_capitulos_recurso ON capitulos(recurso_id)")
+
+        # ---------------- Repaso espaciado y quizzes ----------------
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tarjetas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recurso_id INTEGER DEFAULT 0,
+                pagina INTEGER DEFAULT 0,
+                pregunta TEXT NOT NULL,
+                respuesta TEXT NOT NULL,
+                origen TEXT DEFAULT 'manual',
+                creado TEXT,
+                facilidad REAL DEFAULT 2.5,
+                intervalo INTEGER DEFAULT 0,
+                repeticiones INTEGER DEFAULT 0,
+                lapsos INTEGER DEFAULT 0,
+                proxima TEXT,
+                ultima TEXT,
+                introducida TEXT,
+                estado TEXT DEFAULT 'nueva',
+                suspendida INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tarjetas_proxima ON tarjetas(proxima)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS repasos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tarjeta_id INTEGER NOT NULL,
+                fecha TEXT NOT NULL,
+                calidad INTEGER NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_repasos_fecha ON repasos(fecha)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quizzes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recurso_id INTEGER DEFAULT 0,
+                titulo TEXT,
+                creado TEXT,
+                total INTEGER,
+                aciertos INTEGER
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_preguntas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quiz_id INTEGER NOT NULL,
+                pregunta TEXT,
+                opciones TEXT,
+                correcta INTEGER,
+                elegida INTEGER,
+                acierto INTEGER,
+                explicacion TEXT
+            )
+        """)
 
         # ---------------- Notas y subrayados ----------------
         # tipo: 'nota' | 'subrayado' | 'sesion' (nota rápida al cerrar el lector).
@@ -589,6 +645,7 @@ def fusionar_progreso(origen_id: int, destino_id: int):
                          "WHERE id = ?) WHERE id = ?", (origen_id, destino_id))
         else:
             conn.execute("DELETE FROM capitulos WHERE recurso_id = ?", (origen_id,))
+        conn.execute("UPDATE tarjetas SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         if (o[3] or 0) == total:           # mismas páginas: las notas siguen siendo válidas
             conn.execute("UPDATE notas SET recurso_id = ? WHERE recurso_id = ?", (destino_id, origen_id))
         else:
@@ -803,3 +860,156 @@ def libros_sin_indice(solo_incluidos: bool = True) -> list:
         return filas
     excluidas, raiz = areas_excluidas(), obtener_ruta_biblioteca()
     return [(i, r) for i, r in filas if not esta_excluido(r, raiz, excluidas)]
+
+
+# ============================================================================ repaso espaciado
+LIMITE_NUEVAS_DIA = 10
+LIMITE_REPASOS_DIA = 150
+
+
+def _hoy() -> str:
+    return date.today().isoformat()
+
+
+def limite_nuevas() -> int:
+    try:
+        return max(0, int(obtener_config("repaso_nuevas_dia") or LIMITE_NUEVAS_DIA))
+    except ValueError:
+        return LIMITE_NUEVAS_DIA
+
+
+def agregar_tarjetas(recurso_id, pagina: int, tarjetas: list, origen: str = "ia") -> int:
+    """Crea tarjetas nuevas (se omiten las preguntas ya existentes del mismo libro). Devuelve cuántas se crearon."""
+    recurso_id = recurso_id or 0
+    with obtener_conexion() as conn:
+        existentes = {rp.normalizar_pregunta(f[0]) for f in
+                      conn.execute("SELECT pregunta FROM tarjetas WHERE recurso_id = ?", (recurso_id,))}
+        nuevas = 0
+        for t in tarjetas:
+            clave = rp.normalizar_pregunta(t["pregunta"])
+            if not clave or clave in existentes:
+                continue
+            existentes.add(clave)
+            conn.execute(
+                "INSERT INTO tarjetas (recurso_id, pagina, pregunta, respuesta, origen, creado, proxima, estado) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'nueva')",
+                (recurso_id, int(pagina or 0), t["pregunta"], t["respuesta"], origen, _ahora(), _hoy()))
+            nuevas += 1
+    return nuevas
+
+
+def _tarjeta_dict(f) -> dict:
+    return dict(f)
+
+
+def tarjetas_pendientes(recurso_id=None, limite_total: int = LIMITE_REPASOS_DIA) -> list:
+    """Tarjetas para repasar hoy: primero las vencidas (las más atrasadas antes) y luego las nuevas que
+    quepan en el límite diario de nuevas."""
+    hoy = _hoy()
+    filtro, args = ("AND t.recurso_id = ?", [recurso_id]) if recurso_id is not None else ("", [])
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        vencidas = conn.execute(
+            f"SELECT t.* FROM tarjetas t WHERE t.suspendida = 0 AND t.estado != 'nueva' AND t.proxima <= ? {filtro} "
+            f"ORDER BY t.proxima, t.id LIMIT ?", [hoy] + args + [limite_total]).fetchall()
+        ya_nuevas = conn.execute("SELECT COUNT(*) FROM tarjetas WHERE introducida = ?", (hoy,)).fetchone()[0]
+        cupo = max(0, limite_nuevas() - ya_nuevas)
+        nuevas = conn.execute(
+            f"SELECT t.* FROM tarjetas t WHERE t.suspendida = 0 AND t.estado = 'nueva' {filtro} ORDER BY t.id LIMIT ?",
+            args + [cupo]).fetchall() if cupo else []
+    return [_tarjeta_dict(f) for f in vencidas] + [_tarjeta_dict(f) for f in nuevas]
+
+
+def registrar_repaso(tarjeta_id: int, calidad: int) -> dict:
+    """Guarda la respuesta y reprograma la tarjeta. Devuelve los campos nuevos."""
+    hoy = _hoy()
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        t = conn.execute("SELECT * FROM tarjetas WHERE id = ?", (tarjeta_id,)).fetchone()
+        if t is None:
+            return {}
+        nuevo = rp.programar(dict(t), calidad)
+        conn.execute(
+            "UPDATE tarjetas SET facilidad = ?, intervalo = ?, repeticiones = ?, lapsos = ?, proxima = ?, ultima = ?, "
+            "estado = ?, introducida = COALESCE(introducida, ?) WHERE id = ?",
+            (nuevo["facilidad"], nuevo["intervalo"], nuevo["repeticiones"], nuevo["lapsos"], nuevo["proxima"],
+             nuevo["ultima"], nuevo["estado"], hoy, tarjeta_id))
+        conn.execute("INSERT INTO repasos (tarjeta_id, fecha, calidad) VALUES (?, ?, ?)", (tarjeta_id, hoy, calidad))
+    return nuevo
+
+
+def resumen_repaso(recurso_id=None) -> dict:
+    """Números para el Inicio y la pantalla de Repaso."""
+    hoy = _hoy()
+    filtro, args = ("AND recurso_id = ?", [recurso_id]) if recurso_id is not None else ("", [])
+    with obtener_conexion() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM tarjetas WHERE suspendida = 0 {filtro}", args).fetchone()[0]
+        vencidas = conn.execute(f"SELECT COUNT(*) FROM tarjetas WHERE suspendida = 0 AND estado != 'nueva' AND proxima <= ? {filtro}",
+                                [hoy] + args).fetchone()[0]
+        nuevas_total = conn.execute(f"SELECT COUNT(*) FROM tarjetas WHERE suspendida = 0 AND estado = 'nueva' {filtro}", args).fetchone()[0]
+        ya_nuevas = conn.execute("SELECT COUNT(*) FROM tarjetas WHERE introducida = ?", (hoy,)).fetchone()[0]
+        hechas_hoy = conn.execute("SELECT COUNT(*) FROM repasos WHERE fecha = ?", (hoy,)).fetchone()[0]
+        dominadas = conn.execute(f"SELECT COUNT(*) FROM tarjetas WHERE suspendida = 0 AND intervalo >= 21 {filtro}", args).fetchone()[0]
+        desde = (date.today() - timedelta(days=30)).isoformat()
+        r30 = conn.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN calidad >= 1 THEN 1 ELSE 0 END), 0) FROM repasos WHERE fecha >= ?",
+                           (desde,)).fetchone()
+    nuevas = min(nuevas_total, max(0, limite_nuevas() - ya_nuevas))
+    return {"total": total, "vencidas": vencidas, "nuevas": nuevas, "pendientes": vencidas + nuevas,
+            "hechas_hoy": hechas_hoy, "dominadas": dominadas, "retencion": (r30[1] / r30[0]) if r30[0] else None,
+            "repasos_30d": r30[0]}
+
+
+def listar_tarjetas(recurso_id=None, texto: str = "", limite: int = 300) -> list:
+    sql, args = ["SELECT t.*, r.nombre_archivo AS libro FROM tarjetas t LEFT JOIN recursos r ON r.id = t.recurso_id WHERE 1 = 1"], []
+    if recurso_id is not None:
+        sql.append("AND t.recurso_id = ?")
+        args.append(recurso_id)
+    if texto.strip():
+        sql.append("AND (t.pregunta LIKE ? OR t.respuesta LIKE ?)")
+        args += [f"%{texto.strip()}%"] * 2
+    sql.append("ORDER BY t.id DESC LIMIT ?")
+    args.append(limite)
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(f) for f in conn.execute(" ".join(sql), args).fetchall()]
+
+
+def libros_con_tarjetas() -> list:
+    """[(recurso_id, título, cantidad)]; recurso_id 0 agrupa las tarjetas sin libro."""
+    with obtener_conexion() as conn:
+        filas = conn.execute("SELECT t.recurso_id, r.nombre_archivo, COUNT(*) FROM tarjetas t "
+                             "LEFT JOIN recursos r ON r.id = t.recurso_id GROUP BY t.recurso_id "
+                             "ORDER BY COUNT(*) DESC").fetchall()
+    return [(f[0], (f[1][:-4] if f[1] and f[1].lower().endswith(".pdf") else f[1]) or "Sin libro", f[2]) for f in filas]
+
+
+def actualizar_tarjeta(tarjeta_id: int, pregunta: str, respuesta: str):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE tarjetas SET pregunta = ?, respuesta = ? WHERE id = ?", (pregunta, respuesta, tarjeta_id))
+
+
+def borrar_tarjeta(tarjeta_id: int):
+    with obtener_conexion() as conn:
+        conn.execute("DELETE FROM tarjetas WHERE id = ?", (tarjeta_id,))
+        conn.execute("DELETE FROM repasos WHERE tarjeta_id = ?", (tarjeta_id,))
+
+
+# ---------------------------------------------------------------- quizzes
+def guardar_quiz(recurso_id, titulo: str, preguntas: list) -> int:
+    """preguntas: [{'pregunta','opciones','correcta','elegida','explicacion'}] ya contestadas."""
+    aciertos = sum(1 for q in preguntas if q.get("elegida") == q["correcta"])
+    with obtener_conexion() as conn:
+        qid = conn.execute("INSERT INTO quizzes (recurso_id, titulo, creado, total, aciertos) VALUES (?, ?, ?, ?, ?)",
+                           (recurso_id or 0, titulo, _ahora(), len(preguntas), aciertos)).lastrowid
+        conn.executemany(
+            "INSERT INTO quiz_preguntas (quiz_id, pregunta, opciones, correcta, elegida, acierto, explicacion) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(qid, q["pregunta"], json.dumps(q["opciones"], ensure_ascii=False), q["correcta"], q.get("elegida"),
+              1 if q.get("elegida") == q["correcta"] else 0, q.get("explicacion", "")) for q in preguntas])
+    return qid
+
+
+def listar_quizzes(limite: int = 25) -> list:
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(f) for f in conn.execute(
+            "SELECT * FROM quizzes ORDER BY id DESC LIMIT ?", (limite,)).fetchall()]

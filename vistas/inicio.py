@@ -30,11 +30,12 @@ class VistaInicio(ctk.CTkScrollableFrame):
                          ).grid(row=2, column=0, pady=20)
             return
 
-        self._tarjeta_continuar(2)
-        self._fila_estadisticas(3)
-        self._grafica(4)
-        self._ruta_activa(libros, 5)
-        self._mas_estudiados(6)
+        self._banner_repaso(2)
+        self._tarjeta_continuar(3)
+        self._fila_estadisticas(4)
+        self._grafica(5)
+        self._ruta_activa(libros, 6)
+        self._mas_estudiados(7)
 
     @staticmethod
     def _frase(libros):
@@ -47,6 +48,25 @@ class VistaInicio(ctk.CTkScrollableFrame):
         return "Abre un libro y el tiempo se registra solo: sin botones de entrada ni salida."
 
     # ------------------------------------------------------------------ bloques
+    def _banner_repaso(self, fila):
+        r = db.resumen_repaso()
+        if r["total"] == 0:
+            return
+        pend = r["pendientes"]
+        marco = tarjeta(self, fg_color=C["tarjeta"], border_color=C["acento"] if pend else C["borde"])
+        marco.grid(row=fila, column=0, sticky="ew", padx=28, pady=(0, 12))
+        marco.columnconfigure(1, weight=1)
+        ctk.CTkLabel(marco, text="🧠", font=fuente(24)).grid(row=0, column=0, padx=(18, 10), pady=12)
+        if pend:
+            texto = f"Tienes {pend} tarjeta{'s' if pend != 1 else ''} para repasar hoy"
+            det = "Unos minutos ahora y lo recordarás semanas."
+        else:
+            texto, det = "Repaso al día ✓", f"{r['total']} tarjetas en tu mazo · {r['hechas_hoy']} repasadas hoy"
+        titulo(marco, texto, 15).grid(row=0, column=1, sticky="w", pady=(10, 0))
+        subtitulo(marco, det, 11).grid(row=1, column=1, sticky="w", pady=(0, 10))
+        if pend:
+            boton(marco, "Repasar", lambda: self.app.ir("repaso"), width=100).grid(row=0, column=2, rowspan=2, padx=16)
+
     def _tarjeta_continuar(self, fila):
         libro = db.libro_para_continuar()
         marco = tarjeta(self, fg_color=C["acento_suave"], border_color=C["acento"])

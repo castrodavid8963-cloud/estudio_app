@@ -193,6 +193,13 @@ class VistaLector(ctk.CTkFrame):
             b = boton(fila_acc, texto, lambda p=prompt: self._accion_rapida(p), "suave", height=28, font=fuente(11))
             b.pack(side="left", padx=2, expand=True, fill="x")
             self.botones_acc.append(b)
+        fila_rep = ctk.CTkFrame(fila_acc, fg_color="transparent")
+        fila_rep.pack(fill="x", side="bottom")
+        self.btn_tarjetas = boton(fila_rep, "🃏 Crear tarjetas", self.crear_tarjetas, "suave", height=28, font=fuente(11))
+        self.btn_tarjetas.pack(side="left", padx=2, pady=(4, 0), expand=True, fill="x")
+        self.btn_quiz_rep = boton(fila_rep, "✅ Quiz guardado", self.hacer_quiz, "suave", height=28, font=fuente(11))
+        self.btn_quiz_rep.pack(side="left", padx=2, pady=(4, 0), expand=True, fill="x")
+        self.botones_acc += [self.btn_tarjetas, self.btn_quiz_rep]
 
         entrada = ctk.CTkFrame(self.tutor, fg_color="transparent")
         entrada.grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=10)
@@ -964,6 +971,52 @@ class VistaLector(ctk.CTkFrame):
                 return (self._doc[n - 1].get_text("text") or "").strip()
         except Exception:
             return ""
+
+    def crear_tarjetas(self):
+        """Genera tarjetas de repaso con el tutor a partir de la página actual y las 3 siguientes."""
+        if self._ia_ocupada or self.libro is None or not self._tutor_permitido:
+            return
+        if not self.app.ollama_listo:
+            self._escribir("SISTEMA", "La IA no está conectada: abre Ollama para crear tarjetas.", "quien_s", "e")
+            return
+        import ai_pdf
+        from vistas.repaso import texto_de_paginas
+        rid, nombre, ruta, pag = self.libro["id"], self.libro["titulo"], self.libro["ruta"], self._pagina
+        fin = min(pag + 3, self.libro.get("total_paginas") or pag + 3)
+        self._ia_ocupada = True
+        self._habilitar_entrada(False)
+        self.lbl_contexto.configure(text="⏳ Creando tarjetas…")
+
+        def trabajo():
+            try:
+                texto = texto_de_paginas(ruta, pag, fin)
+                tarjetas = ai_pdf.generar_tarjetas_ia(texto, nombre, 6)
+                n = db.agregar_tarjetas(rid, pag, tarjetas, "ia")
+                self.app._en_ui(self._tarjetas_listas, n, len(tarjetas), pag, fin, None)
+            except Exception as e:
+                self.app._en_ui(self._tarjetas_listas, 0, 0, pag, fin, str(e))
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def _tarjetas_listas(self, nuevas, generadas, ini, fin, error):
+        self._ia_ocupada = False
+        try:
+            self._habilitar_entrada(True)
+            self.lbl_contexto.configure(text="Listo.")
+            if error:
+                self._escribir("SISTEMA", f"No pude crear tarjetas: {error}", "quien_s", "e")
+            else:
+                dup = generadas - nuevas
+                self._escribir("SISTEMA", f"🃏 {nuevas} tarjetas nuevas de las págs. {ini}–{fin}"
+                               + (f" ({dup} ya existían)" if dup else "") + ". Las verás en Repaso.", "quien_s", "s")
+            self.app.actualizar_insignia_repaso()
+        except tk.TclError:
+            pass
+
+    def hacer_quiz(self):
+        if self.libro is None:
+            return
+        pag = self._pagina
+        self.app.ir("repaso", quiz={"libro_id": self.libro["id"], "ini": pag, "fin": pag + 3})
 
     def _accion_rapida(self, plantilla):
         self._consultar(plantilla.format(n=self._pagina), mostrar=plantilla.format(n=self._pagina), solo_pagina=True)

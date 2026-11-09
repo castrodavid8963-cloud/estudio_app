@@ -16,6 +16,7 @@ from vistas.buscar import VistaBuscar
 from vistas.herramientas import VistaHerramientas
 from vistas.inicio import VistaInicio
 from vistas.lector import VistaLector
+from vistas.repaso import VistaRepaso
 from vistas.rutas import VistaRutas
 
 # Inactividad más generosa que la de por defecto: leer una página densa lleva tiempo sin tocar nada.
@@ -26,6 +27,7 @@ NAVEGACION = [
     ("inicio", "🏠", "Inicio"),
     ("biblioteca", "📚", "Biblioteca"),
     ("rutas", "🧭", "Rutas"),
+    ("repaso", "🧠", "Repaso"),
     ("buscar", "🔎", "Buscar"),
     ("herramientas", "🛠", "Herramientas"),
 ]
@@ -52,6 +54,7 @@ class AppEstudio(ctk.CTk):
         self._lateral_compacto = None
         self._job_lateral = None
         self.cambios_pendientes = 0
+        self.repaso_pendiente = 0
         self._comprobando = False
         self._ultima_comprobacion = 0.0
 
@@ -67,6 +70,7 @@ class AppEstudio(ctk.CTk):
             "inicio": VistaInicio(self.contenedor, self),
             "biblioteca": VistaBiblioteca(self.contenedor, self),
             "rutas": VistaRutas(self.contenedor, self),
+            "repaso": VistaRepaso(self.contenedor, self),
             "buscar": VistaBuscar(self.contenedor, self),
             "herramientas": VistaHerramientas(self.contenedor, self),
         }
@@ -142,6 +146,7 @@ class AppEstudio(ctk.CTk):
         else:
             self.pie_lateral.pack(side="bottom", fill="x", padx=12, pady=14)
         self._pintar_insignia()
+        self.actualizar_insignia_repaso()
         if self.lector_visible:
             self.lector._al_cambiar_tamano()
 
@@ -229,6 +234,7 @@ class AppEstudio(ctk.CTk):
             b.configure(fg_color=C["acento_suave"] if activo else "transparent",
                         text_color=C["texto"] if activo else C["texto2"])
         self._refrescar_pie()
+        self.actualizar_insignia_repaso()
 
     def abrir_libro(self, recurso_id: int, panel: str = None, pagina: int = None):
         libro = db.obtener_libro(recurso_id)
@@ -292,6 +298,20 @@ class AppEstudio(ctk.CTk):
         self.cambios_pendientes = info["nuevos"] + info["faltantes"]
         self._pintar_insignia()
         self.vistas["biblioteca"].mostrar_cambios(info)
+
+    def actualizar_insignia_repaso(self):
+        """Marca en la barra lateral cuántas tarjetas hay para repasar hoy."""
+        try:
+            n = db.resumen_repaso()["pendientes"]
+        except Exception:
+            n = 0
+        self.repaso_pendiente = n
+        if self._lateral_compacto:
+            texto = "🧠●" if n else "🧠"
+        else:
+            texto = "  🧠   Repaso" + (f"   ● {n}" if n else "")
+        if "repaso" in self.botones_nav:
+            self.botones_nav["repaso"].configure(text=texto)
 
     def _pintar_insignia(self):
         if self._lateral_compacto:

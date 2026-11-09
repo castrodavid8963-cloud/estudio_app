@@ -242,3 +242,57 @@ def consultar_ollama_con_contexto(
     if not contenido:
         raise ErrorOllama("Ollama devolvió una respuesta vacía.")
     return contenido
+
+
+# ============================================================================ tarjetas y quizzes
+_SISTEMA_ESTUDIO = (
+    "Eres un profesor que prepara material de estudio a partir de un texto de un libro. "
+    "Escribes siempre en español, con preguntas claras y autocontenidas (que se entiendan sin ver el texto), "
+    "basadas únicamente en lo que dice el texto. Respondes SOLO con JSON válido, sin comentarios."
+)
+
+
+def _generar_json(instruccion: str, texto: str, nombre_pdf: str, modelo: str = None) -> str:
+    modelo = modelo or MODELO_POR_DEFECTO
+    if len((texto or "").strip()) < 200:
+        raise ErrorOllama("Ese fragmento casi no tiene texto (¿es una página escaneada o de imágenes?).")
+    mensajes = [
+        {"role": "system", "content": _SISTEMA_ESTUDIO},
+        {"role": "user", "content": f"Libro: {nombre_pdf}\n\nTEXTO:\n{texto[:MAX_CHARS_CONTEXTO + 2500]}\n\n{instruccion}"},
+    ]
+    try:
+        r = _cliente.chat(model=modelo, messages=mensajes, format="json",
+                          options={"num_ctx": NUM_CTX, "temperature": 0.4})
+        contenido = (r["message"]["content"] or "").strip()
+    except Exception as e:
+        raise ErrorOllama(f"No se pudo obtener respuesta de Ollama (modelo '{modelo}'): {e}") from e
+    if not contenido:
+        raise ErrorOllama("Ollama devolvió una respuesta vacía.")
+    return contenido
+
+
+def generar_tarjetas_ia(texto: str, nombre_pdf: str, cantidad: int = 6, modelo: str = None) -> list:
+    """Tarjetas [{'pregunta','respuesta'}] para repasar el texto dado."""
+    import repaso
+    crudo = _generar_json(
+        f"Crea {cantidad} tarjetas de repaso (pregunta y respuesta corta) con los conceptos, definiciones o "
+        "procedimientos más importantes del texto. Evita preguntas triviales o de sí/no. Formato exacto: "
+        '{"tarjetas": [{"pregunta": "...", "respuesta": "..."}]}', texto, nombre_pdf, modelo)
+    tarjetas = repaso.parsear_tarjetas(crudo, cantidad + 3)
+    if not tarjetas:
+        raise ErrorOllama("El modelo no devolvió tarjetas utilizables. Prueba de nuevo o con otro modelo.")
+    return tarjetas
+
+
+def generar_quiz_ia(texto: str, nombre_pdf: str, cantidad: int = 5, modelo: str = None) -> list:
+    """Preguntas de opción múltiple [{'pregunta','opciones','correcta','explicacion'}]."""
+    import repaso
+    crudo = _generar_json(
+        f"Crea {cantidad} preguntas de opción múltiple con exactamente 4 opciones cada una, una sola correcta y "
+        "distractores plausibles. Indica la correcta con la letra A, B, C o D y una explicación de una frase. "
+        'Formato exacto: {"preguntas": [{"pregunta": "...", "opciones": ["...", "...", "...", "..."], '
+        '"correcta": "B", "explicacion": "..."}]}', texto, nombre_pdf, modelo)
+    quiz = repaso.parsear_quiz(crudo, cantidad + 2)
+    if not quiz:
+        raise ErrorOllama("El modelo no devolvió preguntas utilizables. Prueba de nuevo o con otro modelo.")
+    return quiz
