@@ -339,3 +339,30 @@ def generar_quiz_ia(texto: str, nombre_pdf: str, cantidad: int = 5, modelo: str 
     if not quiz:
         raise ErrorOllama("El modelo no devolvió preguntas utilizables. Prueba de nuevo o con otro modelo.")
     return quiz
+
+
+def generar_mini_proyectos_ia(objetivo: str, etapa: str, descripcion_etapa: str, libros: list,
+                              cantidad: int = 3, modelo: str = None) -> list:
+    """Ideas de mini-proyectos prácticos [{'titulo','descripcion'}] para una etapa de una ruta de estudio."""
+    import plan
+    modelo = modelo or modelo_actual()
+    lista = "\n".join(f"- {t}" for t in libros[:8]) or "(sin libros todavía)"
+    mensajes = [
+        {"role": "system", "content": "Eres un mentor de ingeniería que propone prácticas pequeñas y concretas. "
+                                      "Escribes en español. Respondes SOLO con JSON válido."},
+        {"role": "user", "content": (
+            f"Ruta de estudio: {objetivo}\nEtapa: {etapa} — {descripcion_etapa}\nLibros de la etapa:\n{lista}\n\n"
+            f"Propón {cantidad} mini-proyectos para practicar lo de esta etapa. Cada uno debe poder terminarse en "
+            "2 a 6 horas, ser verificable (qué debe hacer al final) y no necesitar nada raro. Formato exacto: "
+            '{"proyectos": [{"titulo": "...", "descripcion": "qué construir y cómo sabrás que funciona"}]}')},
+    ]
+    try:
+        r = _cliente.chat(model=modelo, messages=mensajes, format="json",
+                          options={"num_ctx": NUM_CTX, "temperature": 0.6})
+        contenido = (r["message"]["content"] or "").strip()
+    except Exception as e:
+        raise ErrorOllama(f"No se pudo obtener respuesta de Ollama (modelo '{modelo}'): {e}") from e
+    proyectos = plan.parsear_proyectos(contenido, cantidad + 2)
+    if not proyectos:
+        raise ErrorOllama("El modelo no devolvió ideas utilizables. Prueba de nuevo.")
+    return proyectos

@@ -36,7 +36,8 @@ def texto_de_paginas(ruta: str, ini: int, fin: int, max_chars: int = 9000) -> st
 
 
 class DialogoTarjeta(ctk.CTkToplevel):
-    def __init__(self, padre, titulo_txt, pregunta="", respuesta="", al_guardar=None):
+    def __init__(self, padre, titulo_txt, pregunta="", respuesta="", al_guardar=None,
+                 etiquetas=("Pregunta (frente)", "Respuesta (reverso)")):
         super().__init__(padre)
         self.title(titulo_txt)
         self.configure(fg_color=C["fondo"])
@@ -47,12 +48,12 @@ class DialogoTarjeta(ctk.CTkToplevel):
             self.transient(padre.winfo_toplevel())
         except tk.TclError:
             pass
-        ctk.CTkLabel(self, text="Pregunta (frente)", font=fuente(12, "bold"), text_color=C["texto2"]).pack(anchor="w", padx=18, pady=(16, 2))
+        ctk.CTkLabel(self, text=etiquetas[0], font=fuente(12, "bold"), text_color=C["texto2"]).pack(anchor="w", padx=18, pady=(16, 2))
         self.p = ctk.CTkTextbox(self, height=100, fg_color=C["tarjeta"], border_color=C["borde"], border_width=1,
                                 text_color=C["texto"], font=fuente(13), wrap="word")
         self.p.pack(fill="x", padx=18)
         self.p.insert("1.0", pregunta)
-        ctk.CTkLabel(self, text="Respuesta (reverso)", font=fuente(12, "bold"), text_color=C["texto2"]).pack(anchor="w", padx=18, pady=(12, 2))
+        ctk.CTkLabel(self, text=etiquetas[1], font=fuente(12, "bold"), text_color=C["texto2"]).pack(anchor="w", padx=18, pady=(12, 2))
         self.r = ctk.CTkTextbox(self, fg_color=C["tarjeta"], border_color=C["borde"], border_width=1,
                                 text_color=C["texto"], font=fuente(13), wrap="word")
         self.r.pack(fill="both", expand=True, padx=18)
@@ -74,7 +75,7 @@ class DialogoTarjeta(ctk.CTkToplevel):
     def _guardar(self):
         p, r = self.p.get("1.0", "end").strip(), self.r.get("1.0", "end").strip()
         if not p or not r:
-            messagebox.showinfo("Tarjeta", "Escribe la pregunta y la respuesta.", parent=self)
+            messagebox.showinfo("Tarjeta", "Completa los dos campos.", parent=self)
             return
         self.grab_release()
         self.destroy()

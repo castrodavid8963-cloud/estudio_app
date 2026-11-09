@@ -1,8 +1,11 @@
 """Pantalla de inicio: continuar leyendo, tiempo de estudio, racha y siguiente paso de tu ruta."""
+from datetime import date
+
 import customtkinter as ctk
 
 import database as db
 import roadmap
+import plan
 import tiempo
 from tema import C, fuente, tarjeta, titulo, subtitulo, boton, barra, chip, estado_vacio, recortar, fecha_relativa, nombre_area
 
@@ -34,8 +37,9 @@ class VistaInicio(ctk.CTkScrollableFrame):
         self._tarjeta_continuar(3)
         self._fila_estadisticas(4)
         self._grafica(5)
-        self._ruta_activa(libros, 6)
-        self._mas_estudiados(7)
+        self._mapa_calor(6)
+        self._ruta_activa(libros, 7)
+        self._mas_estudiados(8)
 
     @staticmethod
     def _frase(libros):
@@ -155,6 +159,55 @@ class VistaInicio(ctk.CTkScrollableFrame):
         lienzo.bind("<Configure>", dibujar)
         self.after(50, dibujar)
 
+    def _mapa_calor(self, fila):
+        """Cuadrícula tipo calendario: una columna por semana, intensidad según cuánto de tu meta diaria cubriste."""
+        marco = tarjeta(self)
+        marco.grid(row=fila, column=0, sticky="ew", padx=28, pady=(0, 14))
+        cab = ctk.CTkFrame(marco, fg_color="transparent")
+        cab.pack(fill="x", padx=18, pady=(14, 0))
+        titulo(cab, "Constancia", 14).pack(side="left")
+        self.lbl_calor = ctk.CTkLabel(cab, text="", font=fuente(11), text_color=C["texto2"])
+        self.lbl_calor.pack(side="right")
+        lienzo = ctk.CTkCanvas(marco, height=7 * 24 + 24, bg=C["tarjeta"], highlightthickness=0)
+        lienzo.pack(fill="x", padx=18, pady=(6, 4))
+        datos = tiempo.segundos_por_dia(26 * 7 + 7)
+        meta = tiempo.meta_diaria_segundos()
+        colores = [C["pista"], "#2f3a78", "#4b57c9", "#6a71ee", C["ok"]]
+        pie = ctk.CTkFrame(marco, fg_color="transparent")
+        pie.pack(fill="x", padx=18, pady=(0, 12))
+        ctk.CTkLabel(pie, text="menos", font=fuente(10), text_color=C["texto3"]).pack(side="left")
+        for c in colores:
+            ctk.CTkFrame(pie, width=12, height=12, corner_radius=3, fg_color=c).pack(side="left", padx=2)
+        ctk.CTkLabel(pie, text="más (verde = meta cumplida)", font=fuente(10), text_color=C["texto3"]).pack(side="left", padx=4)
+
+        def dibujar(_e=None):
+            lienzo.delete("all")
+            w = max(lienzo.winfo_width(), 300)
+            sep, izq = 4, 26
+            semanas = 26 if w >= 26 * 14 + izq else max(8, (w - izq) // 14)
+            lado = max(10, min(20, (w - izq) // semanas - sep))
+            cols = plan.rejilla_calor(datos, meta, semanas)
+            for i, nombre in plan.etiquetas_meses(cols):
+                lienzo.create_text(izq + i * (lado + sep), 6, text=nombre, anchor="w", fill=C["texto3"], font=("TkDefaultFont", 8))
+            for j, nombre in ((0, "L"), (2, "M"), (4, "V")):
+                lienzo.create_text(8, 22 + j * (lado + sep) + lado / 2, text=nombre, fill=C["texto3"], font=("TkDefaultFont", 8))
+            for i, col in enumerate(cols):
+                for j, celda in enumerate(col):
+                    if not celda:
+                        continue
+                    iso, seg, nivel = celda
+                    x, y = izq + i * (lado + sep), 18 + j * (lado + sep)
+                    lienzo.create_rectangle(x, y, x + lado, y + lado, fill=colores[nivel], outline="", tags=(f"d{iso}",))
+                    lienzo.tag_bind(f"d{iso}", "<Enter>", lambda e, a=iso, b=seg: self.lbl_calor.configure(
+                        text=f"{a[8:]}/{a[5:7]}/{a[:4]}  ·  {tiempo.formatear(b) if b else 'sin estudio'}"))
+                    lienzo.tag_bind(f"d{iso}", "<Leave>", lambda e: self.lbl_calor.configure(text=resumen))
+            self._calor_dibujado = semanas
+        dias_est = sum(1 for v in datos.values() if v >= 60)
+        resumen = f"{dias_est} días con estudio en los últimos 6 meses"
+        self.lbl_calor.configure(text=resumen)
+        lienzo.bind("<Configure>", dibujar)
+        self.after(60, dibujar)
+
     def _ruta_activa(self, libros, fila):
         oid = db.obtener_config("objetivo_activo")
         if oid not in roadmap.OBJETIVOS:
@@ -168,7 +221,11 @@ class VistaInicio(ctk.CTkScrollableFrame):
         titulo(marco, r["nombre"], 16).grid(row=1, column=1, sticky="w")
         sig = r["siguiente"]
         txt = f"Siguiente: {recortar(sig['titulo'], 60)}" if sig else "¡Ruta completada!"
-        subtitulo(marco, f"{r['completados']}/{r['total']} libros · {txt}").grid(row=2, column=1, sticky="w", pady=(0, 14))
+        extra = ""
+        meta = plan.parsear_fecha(db.obtener_meta_ruta(oid))
+        if meta and r["completados"] < r["total"]:
+            extra = f" · meta {meta.strftime('%d/%m/%Y')} ({max(0, (meta - date.today()).days)} días)"
+        subtitulo(marco, f"{r['completados']}/{r['total']} libros · {txt}{extra}").grid(row=2, column=1, sticky="w", pady=(0, 14))
         barra(marco, r["avance"], r["color"]).grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 14))
         boton(marco, "Abrir ruta", lambda: self.app.ir("rutas", objetivo=oid), "suave", width=110
               ).grid(row=0, column=2, rowspan=3, padx=18)

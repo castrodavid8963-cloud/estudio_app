@@ -1,10 +1,17 @@
 """Rutas de estudio: roadmaps por objetivo generados a partir de TU biblioteca."""
 import tkinter as tk
+from datetime import date, timedelta
+from tkinter import messagebox
 
 import customtkinter as ctk
 
+import ai_pdf
 import database as db
+import plan
 import roadmap
+import threading
+import tiempo
+from vistas.repaso import DialogoTarjeta
 from tema import (C, ESTADO_COLOR, NIVEL_COLOR, fuente, tarjeta, titulo, subtitulo, boton, barra, chip,
                   estado_vacio, recortar, nombre_area)
 
@@ -26,6 +33,8 @@ class VistaRutas(ctk.CTkFrame):
         except (TypeError, ValueError):
             self._ancho_lista = 290
         self._etiquetas_nombre = []
+        self._proy_abiertos = set()
+        self._generando = False
 
         izq = ctk.CTkFrame(self, fg_color=C["lateral"], corner_radius=0, width=self._ancho_lista)
         izq.grid(row=0, column=0, sticky="nsew")
@@ -149,6 +158,8 @@ class VistaRutas(ctk.CTkFrame):
 
         ajustes = db.obtener_ajustes_roadmap(self.objetivo)
         r = roadmap.generar_roadmap(self.objetivo, self._libros, ajustes)
+        self._pph, self._pph_base = plan.ritmo_paginas_hora(db.muestras_ritmo_lectura())
+        self._proyectos = db.listar_mini_proyectos(self.objetivo)
         activo = db.obtener_config("objetivo_activo") == self.objetivo
 
         cab = tarjeta(d)
@@ -167,7 +178,8 @@ class VistaRutas(ctk.CTkFrame):
         if ajustes:
             boton(botones, "Restablecer cambios", self._restablecer, "fantasma", width=140, height=28).pack(pady=2)
 
-        fila = 1
+        self._tarjeta_plan(d, 1, r)
+        fila = 2
         sig = r["siguiente"]
         if sig:
             h = tarjeta(d, fg_color=C["acento_suave"], border_color=C["acento"])
@@ -198,6 +210,10 @@ class VistaRutas(ctk.CTkFrame):
                      font=fuente(14, "bold")).grid(row=0, column=0, rowspan=2, padx=(14, 10), pady=(14, 0), sticky="n")
         titulo(t, e["titulo"], 16).grid(row=0, column=1, sticky="w", pady=(12, 0))
         info = e["descripcion"] + (f"  ·  {e['completados']}/{e['total']}" if e["total"] else "")
+        if e["total"] and e["estado"] != "completada":
+            falta = plan.segundos_restantes(e["libros"], self._pph)
+            if falta >= 60:
+                info += f"  ·  ≈ {tiempo.formatear(falta)}"
         subtitulo(t, info, 12).grid(row=1, column=1, sticky="w", pady=(0, 6))
         if e["total"]:
             barra(t, e["avance_libros"], color, alto=5).grid(row=2, column=1, sticky="ew", padx=(0, 16), pady=(0, 6))
@@ -213,6 +229,15 @@ class VistaRutas(ctk.CTkFrame):
         pie = ctk.CTkFrame(t, fg_color="transparent")
         pie.grid(row=fila_i, column=1, sticky="w", pady=(2, 12))
         boton(pie, "＋ Agregar libro", lambda i=e["indice"]: self._dialogo_agregar(i), "fantasma", height=26, width=120).pack(side="left")
+        proyectos = [p for p in self._proyectos if p["etapa"] == e["indice"]]
+        hechos = sum(1 for p in proyectos if p["hecho"])
+        clave = (self.objetivo, e["indice"])
+        abierto = clave in self._proy_abiertos
+        etiqueta = f"🛠 Mini-proyectos ({hechos}/{len(proyectos)})" if proyectos else "🛠 Mini-proyectos"
+        boton(pie, ("▾ " if abierto else "▸ ") + etiqueta, lambda c=clave: self._alternar_proyectos(c), "fantasma",
+              height=26).pack(side="left", padx=6)
+        if abierto:
+            self._panel_proyectos(t, fila_i + 2, e, proyectos)
         if e["opcionales"]:
             cont = ctk.CTkFrame(t, fg_color="transparent")
             cont.grid(row=fila_i + 1, column=1, sticky="ew", pady=(0, 10))
@@ -340,3 +365,161 @@ class VistaRutas(ctk.CTkFrame):
                     break
         var.trace_add("write", llenar)
         llenar()
+
+    # ------------------------------------------------------------------ plan y meta
+    OPCIONES_META = {"Sin meta": None, "En 1 mes": 30, "En 2 meses": 61, "En 3 meses": 91, "En 6 meses": 183}
+
+    def _tarjeta_plan(self, d, fila, r):
+        libros = [l for e in r["etapas"] for l in e["libros"]]
+        restante = plan.segundos_restantes(libros, self._pph)
+        diario, base_d = plan.ritmo_diario(tiempo.segundos_por_dia(14), tiempo.meta_diaria_segundos())
+        meta = db.obtener_meta_ruta(self.objetivo)
+        p = plan.proyeccion(restante, diario, meta)
+
+        t = tarjeta(d)
+        t.grid(row=fila, column=0, sticky="ew", padx=20, pady=(0, 12))
+        t.columnconfigure(0, weight=1)
+        fila_t = ctk.CTkFrame(t, fg_color="transparent")
+        fila_t.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 0))
+        fila_t.columnconfigure(0, weight=1)
+        titulo(fila_t, "🎯 Plan y meta", 15).grid(row=0, column=0, sticky="w")
+        self.menu_meta = ctk.CTkOptionMenu(fila_t, values=list(self.OPCIONES_META) + ["Fecha…"], width=130, height=26,
+                                           font=fuente(11), fg_color=C["tarjeta_hover"], button_color=C["borde"],
+                                           text_color=C["texto"], command=self._elegir_meta)
+        self.menu_meta.set("Meta: " + meta if meta else "Sin meta")
+        self.menu_meta.grid(row=0, column=1)
+
+        if p["estado"] == "completa":
+            ctk.CTkLabel(t, text="🎉 ¡Todos los libros de esta ruta están completos!", font=fuente(13, "bold"),
+                         text_color=C["ok"], anchor="w").grid(row=1, column=0, sticky="w", padx=18, pady=(6, 14))
+            return
+        base_p = "medido de tu lectura" if self._pph_base == "medido" else "estimado: aún no hay datos tuyos"
+        subtitulo(t, f"Te faltan ≈ {tiempo.formatear(restante)} de lectura  ·  {self._pph:.0f} págs/h ({base_p}).", 12
+                  ).grid(row=1, column=0, sticky="w", padx=18, pady=(6, 0))
+        base_txt = "a tu ritmo de estas dos semanas" if base_d == "real" else "a tu meta diaria"
+        if p["fecha_estimada"]:
+            subtitulo(t, f"Con {tiempo.formatear(int(diario))} al día ({base_txt}) terminarías hacia el "
+                         f"{p['fecha_estimada'].strftime('%d/%m/%Y')} (en {p['dias_necesarios']} días).", 12
+                      ).grid(row=2, column=0, sticky="w", padx=18)
+        color, texto = C["texto2"], ""
+        if p["estado"] == "a_tiempo":
+            color, texto = C["ok"], f"✓ Vas a tiempo para tu meta del {meta}."
+        elif p["estado"] == "justo":
+            color, texto = C["aviso"], (f"⚠ Vas justo para el {meta}: necesitas ≈ "
+                                        f"{tiempo.formatear(p['necesario_por_dia_s'])} al día.")
+        elif p["estado"] == "atrasado":
+            color, texto = C["error"], (f"✗ A este ritmo no llegas al {meta}: necesitarías ≈ "
+                                        f"{tiempo.formatear(p['necesario_por_dia_s'])} al día.")
+        elif p["estado"] == "vencida":
+            color, texto = C["error"], f"La meta del {meta} ya pasó. Elige una fecha nueva."
+        if texto:
+            ctk.CTkLabel(t, text=texto, font=fuente(13, "bold"), text_color=color, anchor="w", justify="left",
+                         wraplength=640).grid(row=3, column=0, sticky="w", padx=18, pady=(6, 0))
+        ctk.CTkLabel(t, text="", height=10).grid(row=4, column=0)
+
+    def _elegir_meta(self, etiqueta):
+        if etiqueta == "Fecha…":
+            dlg = ctk.CTkInputDialog(text="Fecha meta (AAAA-MM-DD):", title="Meta de la ruta")
+            valor = dlg.get_input()
+            if not valor:
+                self._pintar_detalle(conservar_scroll=True)
+                return
+            f = plan.parsear_fecha(valor)
+            if not f:
+                messagebox.showinfo("Meta", "Escribe la fecha como AAAA-MM-DD, por ejemplo 2027-03-15.")
+                self._pintar_detalle(conservar_scroll=True)
+                return
+            db.guardar_meta_ruta(self.objetivo, f.isoformat())
+        elif etiqueta in self.OPCIONES_META:
+            dias = self.OPCIONES_META[etiqueta]
+            db.guardar_meta_ruta(self.objetivo, None if dias is None else (date.today() + timedelta(days=dias)).isoformat())
+        self._pintar_detalle(conservar_scroll=True)
+
+    # ------------------------------------------------------------------ mini-proyectos
+    def _alternar_proyectos(self, clave):
+        (self._proy_abiertos.discard if clave in self._proy_abiertos else self._proy_abiertos.add)(clave)
+        self._pintar_detalle(conservar_scroll=True)
+
+    def _panel_proyectos(self, t, fila, e, proyectos):
+        cont = ctk.CTkFrame(t, fg_color=C["panel"], corner_radius=10)
+        cont.grid(row=fila, column=1, sticky="ew", padx=(0, 16), pady=(0, 12))
+        cont.columnconfigure(0, weight=1)
+        if not proyectos:
+            subtitulo(cont, "Aún no hay mini-proyectos. Practicar lo leído fija más que releer: añade uno tuyo o pide ideas.",
+                      12, wraplength=520).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 4))
+        for i, p in enumerate(proyectos):
+            f = ctk.CTkFrame(cont, fg_color="transparent")
+            f.grid(row=i, column=0, sticky="ew", padx=8, pady=2)
+            f.columnconfigure(1, weight=1)
+            caja = ctk.CTkCheckBox(f, text="", width=22, checkbox_width=18, checkbox_height=18, corner_radius=5,
+                                   fg_color=C["ok"], hover_color=C["acento_hover"], border_color=C["borde"],
+                                   command=lambda x=p: self._marcar_proyecto(x))
+            caja.grid(row=0, column=0, rowspan=2, padx=(6, 4), pady=6, sticky="n")
+            (caja.select if p["hecho"] else caja.deselect)()
+            ctk.CTkLabel(f, text=p["titulo"], anchor="w", justify="left", wraplength=470, font=fuente(13, "bold"),
+                         text_color=C["texto3"] if p["hecho"] else C["texto"]).grid(row=0, column=1, sticky="w", pady=(6, 0))
+            if p["descripcion"]:
+                ctk.CTkLabel(f, text=p["descripcion"], anchor="w", justify="left", wraplength=470, font=fuente(11),
+                             text_color=C["texto2"]).grid(row=1, column=1, sticky="w", pady=(0, 6))
+            acc = ctk.CTkFrame(f, fg_color="transparent")
+            acc.grid(row=0, column=2, rowspan=2, padx=4)
+            for simbolo, cmd in (("✎", lambda x=p: self._editar_proyecto(x)), ("✕", lambda x=p: self._borrar_proyecto(x))):
+                ctk.CTkButton(acc, text=simbolo, width=28, height=26, fg_color="transparent", hover_color=C["borde"],
+                              text_color=C["texto2"], font=fuente(13), command=cmd).pack(side="left")
+        pie = ctk.CTkFrame(cont, fg_color="transparent")
+        pie.grid(row=len(proyectos) + 1, column=0, sticky="w", padx=10, pady=(4, 10))
+        boton(pie, "＋ Nuevo", lambda i=e["indice"]: self._nuevo_proyecto(i), "suave", height=26, width=80).pack(side="left", padx=2)
+        texto_ia = "⏳ Pensando…" if self._generando else "✨ Sugerir con el tutor"
+        self._btn_sugerir = boton(pie, texto_ia, lambda: self._sugerir_proyectos(e), "suave", height=26, width=170,
+                                  state="disabled" if self._generando else "normal")
+        self._btn_sugerir.pack(side="left", padx=2)
+
+    def _marcar_proyecto(self, p):
+        db.marcar_mini_proyecto(p["id"], not p["hecho"])
+        self._pintar_detalle(conservar_scroll=True)
+
+    def _nuevo_proyecto(self, etapa):
+        def guardar(titulo_p, desc):
+            db.agregar_mini_proyectos(self.objetivo, etapa, [{"titulo": titulo_p, "descripcion": desc}], "manual")
+            self._pintar_detalle(conservar_scroll=True)
+        DialogoTarjeta(self, "Nuevo mini-proyecto", "", "", guardar, ("Título", "Qué construir y cómo sabrás que funciona"))
+
+    def _editar_proyecto(self, p):
+        def guardar(titulo_p, desc):
+            db.editar_mini_proyecto(p["id"], titulo_p, desc)
+            self._pintar_detalle(conservar_scroll=True)
+        DialogoTarjeta(self, "Editar mini-proyecto", p["titulo"], p["descripcion"], guardar,
+                       ("Título", "Qué construir y cómo sabrás que funciona"))
+
+    def _borrar_proyecto(self, p):
+        if messagebox.askyesno("Borrar", f"¿Borrar «{p['titulo']}»?"):
+            db.borrar_mini_proyecto(p["id"])
+            self._pintar_detalle(conservar_scroll=True)
+
+    def _sugerir_proyectos(self, e):
+        if self._generando:
+            return
+        if not self.app.ollama_listo:
+            messagebox.showinfo("Tutor", "La IA no está conectada. Abre Ollama y vuelve a intentarlo.")
+            return
+        oid = self.objetivo
+        nombre = roadmap.OBJETIVOS[oid]["nombre"]
+        titulos = [l["titulo"] for l in e["libros"]]
+        self._generando = True
+        self._pintar_detalle(conservar_scroll=True)
+
+        def trabajo():
+            try:
+                ideas = ai_pdf.generar_mini_proyectos_ia(nombre, e["titulo"], e["descripcion"], titulos)
+                n = db.agregar_mini_proyectos(oid, e["indice"], ideas, "ia")
+                self.app._en_ui(self._sugerencias_listas, oid, n, None)
+            except Exception as ex:
+                self.app._en_ui(self._sugerencias_listas, oid, 0, str(ex))
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def _sugerencias_listas(self, oid, n, error):
+        self._generando = False
+        if self.objetivo == oid and self.winfo_exists():
+            self._pintar_detalle(conservar_scroll=True)
+        if error:
+            messagebox.showinfo("Tutor", error)

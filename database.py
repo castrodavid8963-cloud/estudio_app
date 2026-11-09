@@ -244,6 +244,21 @@ def inicializar_db():
             )
         """)
 
+        # ---------------- Mini-proyectos por ruta ----------------
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mini_proyectos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                objetivo TEXT NOT NULL,
+                etapa INTEGER NOT NULL DEFAULT 0,
+                titulo TEXT NOT NULL,
+                descripcion TEXT DEFAULT '',
+                origen TEXT DEFAULT 'manual',
+                hecho INTEGER DEFAULT 0,
+                creado TEXT,
+                hecho_en TEXT
+            )
+        """)
+
         # ---------------- Índices ----------------
         # Estos pueden fallar si la BD antigua ya contiene duplicados; en ese
         # caso la app sigue funcionando y solo se omite la restricción.
@@ -1013,3 +1028,75 @@ def listar_quizzes(limite: int = 25) -> list:
         conn.row_factory = sqlite3.Row
         return [dict(f) for f in conn.execute(
             "SELECT * FROM quizzes ORDER BY id DESC LIMIT ?", (limite,)).fetchall()]
+
+
+# ---------------------------------------------------------------- planificación
+def obtener_meta_ruta(objetivo: str):
+    """Fecha meta (YYYY-MM-DD) de una ruta, o None."""
+    return obtener_config(f"meta_ruta_{objetivo}") or None
+
+
+def guardar_meta_ruta(objetivo: str, fecha_iso):
+    guardar_config(f"meta_ruta_{objetivo}", fecha_iso or "")
+
+
+def muestras_ritmo_lectura() -> list:
+    """[(páginas_leídas, segundos)] por libro con tiempo registrado, para medir tu ritmo de lectura real."""
+    with obtener_conexion() as conn:
+        filas = conn.execute(
+            """SELECT r.ultima_pagina, SUM(s.duracion_segundos) FROM sesiones_estudio s
+               JOIN recursos r ON r.id = s.recurso_id GROUP BY r.id""").fetchall()
+    return [(f[0] or 0, int(f[1] or 0)) for f in filas]
+
+
+def segundos_por_dia_rango(dias: int) -> dict:
+    """{'YYYY-MM-DD': segundos} solo de los días con estudio, para los últimos `dias` días."""
+    desde = (datetime.now() - timedelta(days=dias - 1)).strftime("%Y-%m-%d")
+    with obtener_conexion() as conn:
+        filas = conn.execute(
+            "SELECT substr(fecha_inicio, 1, 10) AS d, SUM(duracion_segundos) FROM sesiones_estudio "
+            "WHERE fecha_inicio >= ? GROUP BY d", (desde,)).fetchall()
+    return {d: int(s or 0) for d, s in filas}
+
+
+# ---------------------------------------------------------------- mini-proyectos
+def listar_mini_proyectos(objetivo: str) -> list:
+    with obtener_conexion() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(f) for f in conn.execute(
+            "SELECT * FROM mini_proyectos WHERE objetivo = ? ORDER BY etapa, hecho, id", (objetivo,)).fetchall()]
+
+
+def agregar_mini_proyectos(objetivo: str, etapa: int, proyectos: list, origen: str = "manual") -> int:
+    """proyectos: [{'titulo','descripcion'}]. No repite un título que ya exista en esa etapa. Devuelve cuántos agregó."""
+    nuevos = 0
+    with obtener_conexion() as conn:
+        existentes = {f[0].strip().casefold() for f in conn.execute(
+            "SELECT titulo FROM mini_proyectos WHERE objetivo = ? AND etapa = ?", (objetivo, etapa))}
+        for p in proyectos:
+            titulo = (p.get("titulo") or "").strip()
+            if not titulo or titulo.casefold() in existentes:
+                continue
+            conn.execute(
+                "INSERT INTO mini_proyectos (objetivo, etapa, titulo, descripcion, origen, creado) VALUES (?, ?, ?, ?, ?, ?)",
+                (objetivo, etapa, titulo[:160], (p.get("descripcion") or "").strip()[:600], origen, _ahora()))
+            existentes.add(titulo.casefold())
+            nuevos += 1
+    return nuevos
+
+
+def marcar_mini_proyecto(proyecto_id: int, hecho: bool):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE mini_proyectos SET hecho = ?, hecho_en = ? WHERE id = ?",
+                     (1 if hecho else 0, _ahora() if hecho else None, proyecto_id))
+
+
+def editar_mini_proyecto(proyecto_id: int, titulo: str, descripcion: str):
+    with obtener_conexion() as conn:
+        conn.execute("UPDATE mini_proyectos SET titulo = ?, descripcion = ? WHERE id = ?",
+                     (titulo.strip()[:160], descripcion.strip()[:600], proyecto_id))
+
+
+def borrar_mini_proyecto(proyecto_id: int):
+    with obtener_conexion() as conn:
+        conn.execute("DELETE FROM mini_proyectos WHERE id = ?", (proyecto_id,))
