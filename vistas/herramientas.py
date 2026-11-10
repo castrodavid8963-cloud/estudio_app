@@ -567,8 +567,9 @@ class VistaHerramientas(ctk.CTkFrame):
     # ================================================================== pestaña Ajustes
     def _tab_ajustes(self, tab):
         tab.columnconfigure(0, weight=1)
+        self._tarjeta_apariencia(tab, 0)
         t = tarjeta(tab)
-        t.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        t.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         titulo(t, "Meta diaria de estudio", 15).pack(anchor="w", padx=18, pady=(16, 0))
         subtitulo(t, "El tiempo se cuenta solo mientras lees o consultas al tutor. Tu meta se muestra en el Inicio.", 12
                   ).pack(anchor="w", padx=18)
@@ -581,7 +582,7 @@ class VistaHerramientas(ctk.CTkFrame):
         self.lbl_meta.pack(side="left", padx=12)
 
         self.tarjeta_areas = tarjeta(tab)
-        self.tarjeta_areas.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.tarjeta_areas.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
         titulo(self.tarjeta_areas, "Áreas excluidas de rutas y tutor IA", 15).pack(anchor="w", padx=18, pady=(16, 0))
         subtitulo(self.tarjeta_areas, "Los libros de estas carpetas siguen en la biblioteca, pero no entran a ninguna ruta "
                   "y el tutor IA no los lee.", 12, wraplength=700).pack(anchor="w", padx=18, pady=(0, 6))
@@ -590,10 +591,46 @@ class VistaHerramientas(ctk.CTkFrame):
         self._vars_areas = {}
 
         t3 = tarjeta(tab)
-        t3.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        t3.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
         titulo(t3, "Tutor IA", 15).pack(anchor="w", padx=18, pady=(16, 0))
         self.lbl_modelo = subtitulo(t3, "", 12, wraplength=700)
         self.lbl_modelo.pack(anchor="w", padx=18, pady=(0, 16))
+
+    def _tarjeta_apariencia(self, tab, fila):
+        """Selector de tema: una muestra por tema con sus colores reales. Al elegir uno la app se reinicia sola."""
+        import tema
+        t = tarjeta(tab)
+        t.grid(row=fila, column=0, sticky="ew", padx=10, pady=10)
+        titulo(t, "Apariencia", 15).pack(anchor="w", padx=18, pady=(16, 0))
+        subtitulo(t, "Elige el tema de color. La app se reinicia sola para aplicarlo (tus datos no se tocan).", 12
+                  ).pack(anchor="w", padx=18, pady=(0, 8))
+        rejilla = ctk.CTkFrame(t, fg_color="transparent")
+        rejilla.pack(fill="x", padx=14, pady=(0, 16))
+        for i, (nombre, p) in enumerate(tema.TEMAS.items()):
+            rejilla.columnconfigure(i % 4, weight=1, uniform="tema")
+            activo = nombre == tema.TEMA_ACTUAL
+            muestra = ctk.CTkFrame(rejilla, fg_color=p["fondo"], corner_radius=12, border_width=3 if activo else 1,
+                                   border_color=p["acento"] if activo else p["borde"], height=74, cursor="hand2")
+            muestra.grid(row=i // 4, column=i % 4, padx=5, pady=5, sticky="ew")
+            muestra.grid_propagate(False)
+            barra_color = ctk.CTkFrame(muestra, fg_color=p["tarjeta"], corner_radius=6, height=22)
+            barra_color.pack(fill="x", padx=10, pady=(10, 0))
+            ctk.CTkFrame(barra_color, fg_color=p["acento"], width=26, height=8, corner_radius=4).place(x=8, y=7)
+            ctk.CTkFrame(barra_color, fg_color=p["texto3"], width=50, height=8, corner_radius=4).place(x=42, y=7)
+            etiqueta = ctk.CTkLabel(muestra, text=("✓ " if activo else "") + nombre, font=fuente(12, "bold"),
+                                    text_color=p["texto"], anchor="w")
+            etiqueta.pack(anchor="w", padx=12, pady=(6, 0))
+            for w in (muestra, barra_color, etiqueta):
+                w.bind("<Button-1>", lambda e, n=nombre: self._elegir_tema(n))
+
+    def _elegir_tema(self, nombre):
+        import tema
+        if nombre == tema.TEMA_ACTUAL:
+            return
+        if messagebox.askyesno("Cambiar tema", f"Se aplicará el tema «{nombre}» y la app se reiniciará.\n\n"
+                                               "Si estás leyendo, tu avance ya está guardado. ¿Continuar?"):
+            tema.guardar_tema(nombre)
+            self.app.reiniciar()
 
     def _refrescar_ajustes(self):
         minutos = int(round(tiempo.meta_diaria_segundos() / 60))

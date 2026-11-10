@@ -7,6 +7,7 @@ import database as db
 import roadmap
 import plan
 import tiempo
+import tema
 from tema import C, fuente, tarjeta, titulo, subtitulo, boton, barra, chip, estado_vacio, recortar, fecha_relativa, nombre_area
 
 
@@ -22,7 +23,7 @@ class VistaInicio(ctk.CTkScrollableFrame):
         self.columnconfigure(0, weight=1)
 
         libros = db.listar_libros(incluir_excluidos=False)
-        titulo(self, "Hola 👋", 26).grid(row=0, column=0, sticky="w", padx=28, pady=(24, 0))
+        titulo(self, "Hola", 26).grid(row=0, column=0, sticky="w", padx=28, pady=(24, 0))
         subtitulo(self, self._frase(libros)).grid(row=1, column=0, sticky="w", padx=28, pady=(2, 16))
 
         if not libros:
@@ -172,7 +173,7 @@ class VistaInicio(ctk.CTkScrollableFrame):
         lienzo.pack(fill="x", padx=18, pady=(6, 4))
         datos = tiempo.segundos_por_dia(26 * 7 + 7)
         meta = tiempo.meta_diaria_segundos()
-        colores = [C["pista"], "#2f3a78", "#4b57c9", "#6a71ee", C["ok"]]
+        colores = [C["pista"]] + [tema.mezclar(C["pista"], C["acento"], t) for t in (0.35, 0.6, 0.85)] + [C["ok"]]
         pie = ctk.CTkFrame(marco, fg_color="transparent")
         pie.pack(fill="x", padx=18, pady=(0, 12))
         ctk.CTkLabel(pie, text="menos", font=fuente(10), text_color=C["texto3"]).pack(side="left")

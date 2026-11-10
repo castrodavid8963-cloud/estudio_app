@@ -12,7 +12,7 @@ import roadmap
 import threading
 import tiempo
 from vistas.repaso import DialogoTarjeta
-from tema import (C, ESTADO_COLOR, NIVEL_COLOR, fuente, tarjeta, titulo, subtitulo, boton, barra, chip,
+from tema import (C, texto_sobre, ESTADO_COLOR, NIVEL_COLOR, fuente, tarjeta, titulo, subtitulo, boton, barra, chip,
                   estado_vacio, recortar, nombre_area)
 
 ANCHO_MIN, ANCHO_MAX = 200, 620
@@ -206,7 +206,7 @@ class VistaRutas(ctk.CTkFrame):
         t.columnconfigure(1, weight=1)
         marca = "✓" if estado == "completada" else str(e["indice"] + 1)
         ctk.CTkLabel(t, text=marca, width=34, height=34, corner_radius=17, fg_color=color if estado != "pendiente" else C["pista"],
-                     text_color="#0e1016" if estado in ("completada", "actual") else C["texto2"],
+                     text_color=texto_sobre(C["ok"]) if estado in ("completada", "actual") else C["texto2"],
                      font=fuente(14, "bold")).grid(row=0, column=0, rowspan=2, padx=(14, 10), pady=(14, 0), sticky="n")
         titulo(t, e["titulo"], 16).grid(row=0, column=1, sticky="w", pady=(12, 0))
         info = e["descripcion"] + (f"  ·  {e['completados']}/{e['total']}" if e["total"] else "")
@@ -234,7 +234,7 @@ class VistaRutas(ctk.CTkFrame):
         clave = (self.objetivo, e["indice"])
         abierto = clave in self._proy_abiertos
         etiqueta = f"🛠 Mini-proyectos ({hechos}/{len(proyectos)})" if proyectos else "🛠 Mini-proyectos"
-        boton(pie, ("▾ " if abierto else "▸ ") + etiqueta, lambda c=clave: self._alternar_proyectos(c), "fantasma",
+        boton(pie, etiqueta + (" ▾" if abierto else " ▸"), lambda c=clave: self._alternar_proyectos(c), "fantasma",
               height=26).pack(side="left", padx=6)
         if abierto:
             self._panel_proyectos(t, fila_i + 2, e, proyectos)

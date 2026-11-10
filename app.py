@@ -1,4 +1,5 @@
 """Hub de Estudio: biblioteca, rutas de estudio, lector con tutor IA y registro automático de tiempo."""
+import os
 import threading
 import time
 import tkinter as tk
@@ -150,6 +151,18 @@ class AppEstudio(ctk.CTk):
         self.actualizar_insignia_repaso()
         if self.lector_visible:
             self.lector._al_cambiar_tamano()
+
+    def reiniciar(self):
+        """Cierra guardando todo y vuelve a abrir la app (para aplicar un tema nuevo)."""
+        import subprocess
+        import sys
+        args = [sys.executable] + ([] if getattr(sys, "frozen", False) else sys.argv)
+        try:
+            subprocess.Popen(args, cwd=os.getcwd())
+        except OSError as e:
+            print(f"[Reinicio] No se pudo relanzar la app: {e}")
+            return
+        self.al_cerrar()
 
     def alternar_compacto(self):
         """Pone la ventana en la mitad derecha de la pantalla con el tutor oculto (para trabajar junto a

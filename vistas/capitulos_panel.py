@@ -2,7 +2,7 @@
 import customtkinter as ctk
 
 import capitulos as cap
-from tema import C, fuente, titulo, subtitulo, boton
+from tema import texto_sobre, C, fuente, titulo, subtitulo, boton
 
 ETIQUETA_MODO = {"auto": "Automático", "completo": "Completo", "capitulos": "Por capítulos"}
 VALOR_MODO = {v: k for k, v in ETIQUETA_MODO.items()}
@@ -87,7 +87,7 @@ class PanelCapitulos(ctk.CTkFrame):
         hecho = bool(c["hecho"])
         ctk.CTkButton(f, text="✓" if hecho else "○", width=30, height=28, corner_radius=14,
                       fg_color=C["ok"] if hecho else "transparent", hover_color=C["borde"],
-                      text_color="#0e1016" if hecho else C["texto2"], font=fuente(14, "bold"),
+                      text_color=texto_sobre(C["ok"]) if hecho else C["texto2"], font=fuente(14, "bold"),
                       state="normal" if cuenta else "disabled",
                       command=lambda i=c["id"], v=hecho: self.lector.marcar_hecho(i, not v)
                       ).grid(row=0, column=2, rowspan=2, padx=8)

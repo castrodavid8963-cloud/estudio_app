@@ -2,8 +2,8 @@
 # Empaqueta el Hub de Estudio como carpeta con .exe (PyInstaller):  pyinstaller estudio.spec --noconfirm
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-datos = collect_data_files("customtkinter")                  # temas y fuentes de CustomTkinter
-ocultos = collect_submodules("vistas") + ["ollama", "PIL._tkinter_finder"]
+datos = collect_data_files("customtkinter") + [("assets", "assets")]   # CustomTkinter + iconos Lucide
+ocultos = collect_submodules("vistas") + ["ollama", "PIL._tkinter_finder", "iconos_codigos"]
 
 a = Analysis(
     ["app.py"],

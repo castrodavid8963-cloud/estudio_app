@@ -25,6 +25,12 @@ puede ocupar varios GB con una biblioteca grande: muévelo a otro disco con `EST
 | `ESTUDIO_MODELO` | Modelo de Ollama por defecto |
 | `ESTUDIO_TESSERACT` | Ruta a `tesseract.exe` si no está en el PATH |
 
+## Temas e iconos
+
+Herramientas › Ajustes › Apariencia: Medianoche, Onyx, Negro, Verde bosque, Océano, Vino, Blanco y Papel. Al elegir uno la
+app se reinicia sola. La elección se guarda en `tema.json` (junto a tus datos). Los iconos son [Lucide](https://lucide.dev)
+(licencia ISC, en `assets/`) y toman el color del tema; para añadir un tema nuevo, agrega una paleta a `TEMAS` en `tema.py`.
+
 ## Respaldo
 
 Herramientas › Mantenimiento. Un respaldo es un `.zip` con tu base de datos (progreso, notas, tarjetas, rutas, tiempo).
