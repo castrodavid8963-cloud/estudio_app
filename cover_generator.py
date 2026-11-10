@@ -6,7 +6,8 @@ from PIL import Image
 
 from pdf_core import fitz, PYMUPDF_LOCK
 
-CACHE_PORTADAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portadas_cache")
+from datos import ruta_datos
+CACHE_PORTADAS = ruta_datos("portadas_cache")
 os.makedirs(CACHE_PORTADAS, exist_ok=True)
 
 

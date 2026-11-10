@@ -6,6 +6,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 import database as db
+import respaldo
 import tiempo
 from portadas import GestorPortadas
 from library_scanner import detectar_cambios_rapido
@@ -368,6 +369,7 @@ class AppEstudio(ctk.CTk):
         except Exception as e:
             print(f"[Cierre] No se pudo guardar la sesión en curso: {e}")
         finally:
+            respaldo.respaldo_automatico()
             self.portadas.cerrar()
             self.destroy()
 

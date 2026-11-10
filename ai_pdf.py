@@ -31,7 +31,7 @@ class ErrorOllama(Exception):
 
 
 # ----------------------------------------------------------------- extracción
-def extraer_fragmentos_pdf(ruta_pdf: str, max_paginas: int = MAX_PAGINAS) -> list:
+def extraer_fragmentos_pdf(ruta_pdf: str, max_paginas: int = MAX_PAGINAS, recurso_id: int = None) -> list:
     """Lee el PDF y lo parte en fragmentos [{'pagina': n, 'texto': str}, ...].
 
     Es lento en libros grandes: llamar desde un hilo, no desde la UI.
@@ -52,6 +52,13 @@ def extraer_fragmentos_pdf(ruta_pdf: str, max_paginas: int = MAX_PAGINAS) -> lis
                 texto = doc[i].get_text("text") or ""
             for trozo in _partir_texto(texto, MAX_CHARS_FRAGMENTO):
                 fragmentos.append({"pagina": i + 1, "texto": trozo})
+        if recurso_id:      # páginas escaneadas que ya pasaron por OCR (Herramientas › Mantenimiento)
+            import buscador
+            for pagina, texto in buscador.textos_ocr(recurso_id):
+                if pagina <= max_paginas:
+                    for trozo in _partir_texto(texto, MAX_CHARS_FRAGMENTO):
+                        fragmentos.append({"pagina": pagina, "texto": trozo})
+            fragmentos.sort(key=lambda f: f["pagina"])
     except Exception as e:
         print(f"[PDF] Error extrayendo texto de {ruta_pdf}: {e}")
     finally:

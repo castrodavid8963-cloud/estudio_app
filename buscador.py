@@ -62,6 +62,11 @@ def inicializar(ruta: str = None):
                 indexado TEXT
             )
         """)
+        _asegurar_tabla_ocr(conn)
+
+
+def _asegurar_tabla_ocr(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS ocr_paginas (rowid_pag INTEGER PRIMARY KEY, texto TEXT)")
 
 
 def tamano_bytes() -> int:
@@ -184,6 +189,9 @@ def indexar_libro(recurso_id: int, ruta: str, firma: str, debe_parar=lambda: Fal
             doc.close()
     sin_texto = total > 0 and caracteres / total < MIN_CARACTERES_POR_PAGINA
     with conexion() as conn:
+        _asegurar_tabla_ocr(conn)
+        conn.execute("DELETE FROM ocr_paginas WHERE rowid_pag BETWEEN ? AND ?",
+                     (recurso_id * FACTOR_ID, recurso_id * FACTOR_ID + FACTOR_ID - 1))
         conn.execute("DELETE FROM paginas WHERE rowid BETWEEN ? AND ?",
                      (recurso_id * FACTOR_ID, recurso_id * FACTOR_ID + FACTOR_ID - 1))
         conn.executemany("INSERT INTO paginas(rowid, texto) VALUES (?, ?)", filas)
@@ -200,6 +208,9 @@ def quitar_libro(recurso_id: int):
         conn.execute("DELETE FROM paginas WHERE rowid BETWEEN ? AND ?",
                      (recurso_id * FACTOR_ID, recurso_id * FACTOR_ID + FACTOR_ID - 1))
         conn.execute("DELETE FROM libros_indexados WHERE recurso_id = ?", (recurso_id,))
+        _asegurar_tabla_ocr(conn)
+        conn.execute("DELETE FROM ocr_paginas WHERE rowid_pag BETWEEN ? AND ?",
+                     (recurso_id * FACTOR_ID, recurso_id * FACTOR_ID + FACTOR_ID - 1))
 
 
 def pendientes(con_total: bool = False):
@@ -292,3 +303,87 @@ class Indexador:
         finally:
             self.finalizado = True
             self.al_progreso(self.hechos, self.total, "", True)
+
+
+# ------------------------------------------------------------------ OCR de libros escaneados
+def libros_escaneados() -> list:
+    """[(id, ruta, firma)] de libros disponibles ya indexados que resultaron sin texto (necesitan OCR)."""
+    hechos = estado_indice()
+    ids = [rid for rid, v in hechos.items() if v[2]]
+    if not ids:
+        return []
+    with db.obtener_conexion() as conn:
+        filas = conn.execute(
+            f"SELECT id, ruta_local FROM recursos WHERE disponible = 1 AND id IN ({','.join('?' * len(ids))}) "
+            "ORDER BY nombre_archivo", ids).fetchall()
+    out = []
+    excluidas, raiz = db.areas_excluidas(), db.obtener_ruta_biblioteca()
+    for rid, ruta in filas:
+        if db.esta_excluido(ruta, raiz, excluidas):
+            continue
+        firma = firma_archivo(ruta)
+        if firma:
+            out.append((rid, ruta, firma))
+    return out
+
+
+def ocr_libro(recurso_id: int, ruta: str, firma: str, idioma: str, exe: str, debe_parar=lambda: False,
+              esperar=lambda: None, progreso=lambda pagina, total: None) -> bool:
+    """Reconoce con OCR las páginas sin texto de un libro y las añade al índice. Guarda cada página al terminarla,
+    así que si se interrumpe se retoma donde quedó. Devuelve True si el libro quedó completo."""
+    import ocr
+    inicializar()
+    with PYMUPDF_LOCK:
+        doc = fitz.open(ruta)
+        total = len(doc)
+    base = recurso_id * FACTOR_ID
+    try:
+        with conexion() as conn:
+            _asegurar_tabla_ocr(conn)
+            hechas = {r[0] - base for r in conn.execute(
+                "SELECT rowid_pag FROM ocr_paginas WHERE rowid_pag BETWEEN ? AND ?", (base, base + FACTOR_ID - 1))}
+        for n in range(1, total + 1):
+            esperar()
+            if debe_parar():
+                return False
+            progreso(n, total)
+            if n in hechas:
+                continue
+            with PYMUPDF_LOCK:
+                nativo = " ".join((doc[n - 1].get_text("text") or "").split())
+            if len(nativo) >= MIN_CARACTERES_PAGINA:
+                continue                                   # ya tiene texto: no se toca
+            with PYMUPDF_LOCK:
+                png = doc[n - 1].get_pixmap(dpi=ocr.DPI, colorspace=fitz.csGRAY).tobytes("png")
+            texto = ocr.reconocer_png(png, idioma, exe)
+            with conexion() as conn:
+                conn.execute("INSERT OR REPLACE INTO ocr_paginas (rowid_pag, texto) VALUES (?, ?)", (base + n, texto))
+    finally:
+        with PYMUPDF_LOCK:
+            doc.close()
+    # Libro completo: se vuelca el texto reconocido al índice de búsqueda
+    with conexion() as conn:
+        filas = conn.execute("SELECT rowid_pag, texto FROM ocr_paginas WHERE rowid_pag BETWEEN ? AND ?",
+                             (base, base + FACTOR_ID - 1)).fetchall()
+        validas = [(r, t) for r, t in filas if len(t) >= MIN_CARACTERES_PAGINA]
+        for r, _ in validas:
+            conn.execute("DELETE FROM paginas WHERE rowid = ?", (r,))
+        conn.executemany("INSERT INTO paginas(rowid, texto) VALUES (?, ?)", validas)
+        extra = sum(len(t) for _, t in validas)
+        conn.execute("UPDATE libros_indexados SET sin_texto = 0, caracteres = caracteres + ?, firma = ? WHERE recurso_id = ?",
+                     (extra, firma, recurso_id))
+    return True
+
+
+def textos_ocr(recurso_id: int) -> list:
+    """[(pagina, texto)] reconocidos con OCR para el tutor. [] si no hay."""
+    if not os.path.exists(ruta_indice()):
+        return []
+    base = recurso_id * FACTOR_ID
+    try:
+        with conexion() as conn:
+            filas = conn.execute("SELECT rowid_pag, texto FROM ocr_paginas WHERE rowid_pag BETWEEN ? AND ? ORDER BY rowid_pag",
+                                 (base, base + FACTOR_ID - 1)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(r - base, t) for r, t in filas if t and len(t) >= MIN_CARACTERES_PAGINA]

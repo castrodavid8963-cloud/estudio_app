@@ -1026,7 +1026,7 @@ class VistaLector(ctk.CTkFrame):
         gen, rid, ruta = self._gen, self.libro["id"], self.libro["ruta"]
 
         def leer():
-            indice = IndiceLibro(extraer_fragmentos_pdf(ruta))
+            indice = IndiceLibro(extraer_fragmentos_pdf(ruta, recurso_id=rid))
             self.app._en_ui(self._indice_listo, gen, indice)
         threading.Thread(target=leer, daemon=True).start()
 

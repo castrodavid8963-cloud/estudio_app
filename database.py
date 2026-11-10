@@ -8,8 +8,9 @@ import capitulos as cap
 import repaso as rp
 from contextlib import contextmanager
 
-# La BD vive junto al código, sin importar desde dónde se lance la app.
-DB_NAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estudios.db")
+# La BD vive en la carpeta de datos (junto al código o al .exe; ver datos.py).
+from datos import ruta_datos
+DB_NAME = ruta_datos("estudios.db")
 
 # Carpetas de primer nivel que no entran al roadmap ni al tutor IA (se pueden cambiar en Ajustes).
 AREAS_EXCLUIDAS_POR_DEFECTO = (

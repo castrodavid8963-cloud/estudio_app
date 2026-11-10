@@ -13,6 +13,7 @@ import tiempo
 from library_scanner import escanear_e_indexar_biblioteca, EXCLUIDAS_POR_DEFECTO
 from ai_pdf import MODELO_POR_DEFECTO
 from vistas.duplicados import PestanaDuplicados
+from vistas.mantenimiento import PestanaMantenimiento
 import capitulos as cap
 from pdf_core import fitz, PYMUPDF_LOCK
 from tema import C, fuente, tarjeta, titulo, subtitulo, boton, barra, chip, recortar, nombre_area
@@ -48,12 +49,14 @@ class VistaHerramientas(ctk.CTkFrame):
                                    segmented_button_selected_hover_color=C["acento_hover"],
                                    segmented_button_unselected_hover_color=C["tarjeta_hover"], corner_radius=14)
         self.tabs.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        for nombre in ("Biblioteca", "Organizar PDFs", "Duplicados", "Ajustes"):
+        for nombre in ("Biblioteca", "Organizar PDFs", "Duplicados", "Mantenimiento", "Ajustes"):
             self.tabs.add(nombre)
         self._tab_biblioteca(self.tabs.tab("Biblioteca"))
         self._tab_gestor(self.tabs.tab("Organizar PDFs"))
         self.pestana_duplicados = PestanaDuplicados(self.tabs.tab("Duplicados"), app, self)
         self.pestana_duplicados.pack(fill="both", expand=True)
+        self.pestana_mant = PestanaMantenimiento(self.tabs.tab("Mantenimiento"), app)
+        self.pestana_mant.pack(fill="both", expand=True)
         self._tab_ajustes(self.tabs.tab("Ajustes"))
 
     def al_mostrar(self, pestaña=None):
@@ -61,6 +64,7 @@ class VistaHerramientas(ctk.CTkFrame):
             self.tabs.set("Organizar PDFs" if pestaña.startswith("Organizar") else pestaña)
         self._refrescar_resumen()
         self._refrescar_ajustes()
+        self.pestana_mant.al_mostrar()
 
     # ================================================================== carpeta raíz compartida
     def _raiz(self) -> str:

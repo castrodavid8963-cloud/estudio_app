@@ -25,6 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from datos import carpeta_datos
 from pdf_core import fitz, PYMUPDF_LOCK
 
 # ----------------------------------------------------------------------------- constantes
@@ -709,7 +710,7 @@ def _carpeta_historial(raiz: str) -> str:
         os.remove(probe)
         return destino
     except OSError:
-        alt = os.path.join(os.path.dirname(os.path.abspath(__file__)), CARPETA_HISTORIAL)
+        alt = os.path.join(carpeta_datos(), CARPETA_HISTORIAL)
         os.makedirs(alt, exist_ok=True)
         return alt
 
@@ -755,7 +756,7 @@ def listar_historiales(raiz: str) -> list:
     """Historiales de cambios aplicados, del más reciente al más antiguo."""
     encontrados = []
     for carpeta in (os.path.join(os.path.abspath(raiz), CARPETA_HISTORIAL),
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), CARPETA_HISTORIAL)):
+                    os.path.join(carpeta_datos(), CARPETA_HISTORIAL)):
         if os.path.isdir(carpeta):
             for f in os.listdir(carpeta):
                 if f.startswith("historial_") and f.endswith(".json"):
